@@ -14,13 +14,12 @@ import Bound.Class (Bound(..))
 import Bound (Scope)
 import Bound.Var (Var(..), unvar)
 import Control.Monad (ap)
-import Data.Map (Map)
 import Data.Text (Text)
 import Data.Vector (Vector)
 import Data.Void (Void)
 
 data Type
-  = TRecord (Map Text Type)
+  = TRecord (Vector (Text, Type))
   | TBool
   | TMany Type
   | TQuery Type
@@ -57,7 +56,7 @@ data Expr a
   | Name Text
   | Project (Expr a) Text
   | Var a
-  | Record (Map Text (Expr a))
+  | Record (Vector (Text, Expr a))
   | Int Int
   | Bool Bool
   | Many (Vector (Expr a))
@@ -77,7 +76,7 @@ instance Monad Expr where
       Name n -> Name n
       Project value field -> Project (value >>= f) field
       Var n -> f n
-      Record fields -> Record $ (>>= f) <$> fields
+      Record fields -> Record $ (fmap.fmap) (>>= f) fields
       Int n -> Int n
       Bool b -> Bool b
       Many values -> Many $ (>>= f) <$> values

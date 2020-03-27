@@ -89,15 +89,13 @@ convert env expected actual =
     Syntax.TRecord fields ->
       case actual of
         Syntax.TRecord fields'
-          | Map.keysSet fields == Map.keysSet fields' -> do
-              Map.foldrWithKey
-                (\n ty rest -> do
-                    ty' <- maybe undefined pure $ Map.lookup n fields'
+          | Vector.length fields == Vector.length fields' -> do
+              traverse_
+                (\((n, ty), (n', ty')) -> do
+                    unless (n == n') . throwError $ TypeMismatch expected actual
                     convert env ty ty'
-                    rest
                 )
-                (pure ())
-                fields
+                (Vector.zip fields fields')
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TInt ->
       case actual of
@@ -231,14 +229,14 @@ inferExpr env expr =
         (Map.lookup n $ _qeGlobals env)
     Syntax.Record fields ->
       Syntax.TRecord <$>
-      traverse (inferExpr env) fields
+     (traverse.traverse) (inferExpr env) fields
     Syntax.Project val field -> do
       valTy <- inferExpr env val
       case valTy of
         Syntax.TRecord fields ->
-          case Map.lookup field fields of
+          case Vector.find ((field ==) . fst) fields of
             Nothing -> throwError $ MissingField valTy field
-            Just fieldTy -> pure fieldTy
+            Just (_, fieldTy) -> pure fieldTy
         _ -> throwError $ ExpectedRecord valTy
     Syntax.Var n -> pure $ _qeLocals env n
 
@@ -411,22 +409,21 @@ mkTableInfo items =
         mempty
         items
     readFields =
-      Vector.foldr
+      Vector.mapMaybe
         (\case
-          Syntax.Field n ty -> Map.insert n ty
-          _ -> id
+          Syntax.Field n ty -> Just (n, ty)
+          _ -> Nothing
         )
-        mempty
         items
     writeFields =
-      Map.mapWithKey
-        (\n ty ->
+      fmap
+        (\(n, ty) ->
            case Map.lookup n unaryConstraints of
-             Nothing -> ty
+             Nothing -> (n, ty)
              Just cs ->
                if "AUTO_INCREMENT" `Set.member` cs
-               then Syntax.TOptional ty
-               else ty
+               then (n, Syntax.TOptional ty)
+               else (n, ty)
         )
         readFields
 
