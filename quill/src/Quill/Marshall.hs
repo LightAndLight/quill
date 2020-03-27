@@ -9,8 +9,6 @@ module Quill.Marshall
 where
 
 import Data.Foldable (foldrM)
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Data.Proxy (Proxy(..))
 import Data.Text (Text)
 import Data.Vector (Vector)
@@ -21,7 +19,7 @@ import Quill.Syntax (Expr, Type)
 import qualified Quill.Syntax as Syntax
 
 data Value
-  = Record (Map Text Value)
+  = Record (Vector (Text, Value))
   | Int Int
   | Bool Bool
   | Many (Vector Value)
@@ -29,7 +27,7 @@ data Value
 toExpr :: Value -> Expr Void
 toExpr value =
   case value of
-    Record fields -> Syntax.Record $ fmap toExpr fields
+    Record fields -> Syntax.Record $ (fmap.fmap) toExpr fields
     Int n -> Syntax.Int n
     Bool b -> Syntax.Bool b
     Many values -> Syntax.Many $ toExpr <$> values
@@ -56,7 +54,7 @@ instance Marshall () where
   toValue () = Record mempty
   fromValueUnchecked value =
     case value of
-      Record{} -> Just ()
+      Record [] -> Just ()
       _ -> Nothing
 
 instance Marshall a => Marshall [a] where
@@ -76,10 +74,10 @@ instance (Marshall a, Marshall b) => Marshall (a, b) where
   toValue (a, b) = Record [("fst", toValue a), ("snd", toValue b)]
   fromValueUnchecked value =
     case value of
-      Record fields ->
+      Record [("fst", a), ("snd", b)] ->
         (,) <$>
-        (fromValueUnchecked =<< Map.lookup "fst" fields) <*>
-        (fromValueUnchecked =<< Map.lookup "snd" fields)
+        (fromValueUnchecked a) <*>
+        (fromValueUnchecked b)
       _ -> Nothing
 
 instance Marshall Bool where

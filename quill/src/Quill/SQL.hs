@@ -196,7 +196,7 @@ expr f e =
     Syntax.Var n -> f n
     Syntax.Record fields ->
       fold . intersperse ", " $
-      foldr ((:) . expr f) [] fields
+      foldr ((:) . expr f . snd) [] fields
     Syntax.Int n -> Builder.stringUtf8 $ show n
     Syntax.Bool b -> if b then "true" else "false"
     Syntax.Many values ->
