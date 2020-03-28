@@ -4,6 +4,7 @@ module Quill.Syntax
   , Language(..)
   , Query(..)
   , Expr(..)
+  , recordPunned
   , Decl(..)
   , TableItem(..)
   )
@@ -93,6 +94,9 @@ instance Monad Expr where
       OR a b -> OR (a >>= f) (b >>= f)
       EQ a b -> EQ (a >>= f) (b >>= f)
       NOT a -> NOT (a >>= f)
+
+recordPunned :: (a -> Text) -> Vector a -> Expr a
+recordPunned f fields = Record $ (\field -> (f field, Var field)) <$> fields
 
 data Decl
   = Table Text (Vector TableItem)
