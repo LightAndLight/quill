@@ -5,6 +5,7 @@ import qualified Bound
 import Data.Bifunctor (bimap)
 import Data.Void (Void, absurd)
 import Quill.Check (QueryEnv(..), convertExpr)
+import Quill.Normalise (normaliseExpr)
 import Quill.Syntax (Expr, Type)
 import qualified Quill.Syntax as Syntax
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
@@ -22,8 +23,8 @@ convertTest ct =
   case convertExpr env (to ct) (from ct) of
     Left err -> expectationFailure $ show err
     Right f ->
-      Syntax.ShowExpr (bimap absurd absurd $ Bound.instantiate1 (inputTerm ct) f) `shouldBe`
-      Syntax.ShowExpr (bimap absurd absurd $ outputTerm ct)
+      Syntax.ShowExpr (bimap absurd absurd . normaliseExpr $ Bound.instantiate1 (inputTerm ct) f) `shouldBe`
+      Syntax.ShowExpr (bimap absurd absurd . normaliseExpr $ outputTerm ct)
   where
    env =
      QueryEnv

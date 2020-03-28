@@ -115,14 +115,6 @@ createTable env tableName items =
 parens :: Builder.Builder -> Builder.Builder
 parens a = "(" <> a <> ")"
 
--- kleisli composition
-composeQuery ::
-  Bound.Scope () (Query a) b ->
-  Bound.Scope () (Query a) b ->
-  Bound.Scope () (Query a) b
-composeQuery f (Bound.fromScope -> g) =
-  Bound.toScope $ Syntax.Bind g "__temp" (Bound.F <$> f)
-
 query ::
   (a -> Builder.Builder) ->
   (b -> Builder.Builder) ->
@@ -147,21 +139,10 @@ query f g q =
       " INTO " <>
       Builder.byteString (encodeUtf8 table)
     Syntax.Bind q' _ rest ->
-      case q' of
-        Syntax.Bind q'' n' rest' ->
-          query f g $
-          Syntax.Bind q'' n' (composeQuery rest rest')
-        Syntax.Return value ->
-          query f g $
-          Syntax.bisubstQuery
-            Syntax.Var
-            (unvar (\() -> Syntax.Return value) Syntax.QVar)
-            (Bound.fromScope rest)
-        _ ->
-          query
-            f
-            (unvar (\() -> parens $ query f g q') g)
-            (Bound.fromScope rest)
+      query
+        f
+        (unvar (\() -> parens $ query f g q') g)
+        (Bound.fromScope rest)
     Syntax.Return value -> expr g f value
 
 expr ::

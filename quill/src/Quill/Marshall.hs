@@ -10,42 +10,12 @@ where
 
 import Data.Foldable (foldrM)
 import Data.Proxy (Proxy(..))
-import Data.Text (Text)
-import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void)
 import Quill.Check (QueryEnv, TypeError, checkExpr)
-import Quill.Syntax (Expr, Type)
+import Quill.Normalise (Value(..), toExpr, fromExpr)
+import Quill.Syntax (Type)
 import qualified Quill.Syntax as Syntax
-
-data Value
-  = Record (Vector (Text, Value))
-  | Int Int
-  | Bool Bool
-  | Many (Vector Value)
-  | Some Value
-  | None
-
-toExpr :: Value -> Expr Void Void
-toExpr value =
-  case value of
-    Record fields -> Syntax.Record $ (fmap.fmap) toExpr fields
-    Int n -> Syntax.Int n
-    Bool b -> Syntax.Bool b
-    Many values -> Syntax.Many $ toExpr <$> values
-    None -> Syntax.None
-    Some a -> Syntax.Some (toExpr a)
-
-fromExpr :: Expr Void Void -> Maybe Value
-fromExpr value =
-  case value of
-    Syntax.Record fields -> Record <$> (traverse.traverse) fromExpr fields
-    Syntax.Int n -> Just $ Int n
-    Syntax.Bool b -> Just $ Bool b
-    Syntax.Many values -> Many <$> traverse fromExpr values
-    Syntax.None -> Just None
-    Syntax.Some a -> Some <$> fromExpr a
-    _ -> Nothing
 
 class Marshall a where
   typeOf :: Proxy a -> Type
