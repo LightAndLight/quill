@@ -66,13 +66,13 @@ instance Eq2 Query where
           _ -> False
       InsertInto value table ->
         case b of
-          InsertInto value' table ->
+          InsertInto value' table' ->
             liftEq2 g f value value' &&
             table == table'
           _ -> False
       InsertIntoReturning value table ->
         case b of
-          InsertIntoReturning value' table ->
+          InsertIntoReturning value' table' ->
             liftEq2 g f value value' &&
             table == table'
           _ -> False
@@ -80,6 +80,7 @@ instance Eq2 Query where
         case b of
           Bind query' n' (Bound.unscope -> body') ->
             liftEq2 f g query query' &&
+            n == n' &&
             liftEq2 f (liftEq (liftEq2 f g)) body body'
           _ -> False
       Return value ->
@@ -94,86 +95,6 @@ instance Eq2 Query where
         case b of
           QName n' -> n == n'
           _ -> False
-instance Eq a => Eq1 (Query a) where; liftEq = liftEq2 (==)
-instance (Eq a, Eq b) => Eq (Query a b) where; (==) = eq1
-instance Functor (Query a) where; fmap = fmapDefault
-instance Foldable (Query a) where; foldMap = foldMapDefault
-instance Traversable (Query a) where; traverse = bitraverse pure
-instance Bifunctor Query where; bimap = bimapDefault
-instance Bifoldable Query where; bifoldMap = bifoldMapDefault
-instance Bitraversable Query where
-  bitraverse f g query =
-    case query of
-      SelectFrom a -> pure $ SelectFrom a
-      InsertInto a b -> (\a' -> InsertInto a' b) <$> bitraverse g f a
-      InsertIntoReturning a b -> (\a' -> InsertIntoReturning a' b) <$> bitraverse g f a
-      Bind a b c -> (\a' c' -> Bind a' b c') <$> bitraverse f g a <*> bitraverseScope f g c
-      Return a -> Return <$> bitraverse g f a
-      QVar a -> QVar <$> g a
-      QName a -> pure $ QName a
-instance Applicative (Query a) where; pure = return; (<*>) = ap
-instance Monad (Query a) where
-  return = QVar
-  (>>=) = flip (bisubstQuery pure)
-
-bisubstScopeQuery :: (a -> Expr d c) -> (b -> Query c d) -> Scope () (Query a) b -> Scope () (Query c) d
-bisubstScopeQuery f g =
-  Scope .
-  bisubstQuery
-    (first (F . QVar) . f)
-    (unvar (QVar . B) (bisubstQuery (first (F . QVar) . f) (QVar . F . g))) .
-  unscope
-
-bisubstQuery :: (a -> Expr d c) -> (b -> Query c d) -> Query a b -> Query c d
-bisubstQuery f g query =
-    case query of
-      QName a -> QName a
-      QVar a -> g a
-      SelectFrom n -> SelectFrom n
-      InsertInto b c -> InsertInto (bisubstExpr g f b) c
-      InsertIntoReturning b c -> InsertIntoReturning (bisubstExpr g f b) c
-      Bind b c d ->
-        Bind (bisubstQuery f g b) c (bisubstScopeQuery f g d)
-      Return b -> Return (bisubstExpr g f b)
-
-data Expr a b
-  = For
-      Text
-      (Expr a b) -- values
-      (Maybe (Scope () (Expr a) b)) -- predicate
-      (Scope () (Expr a) b) -- yield
-  | Name Text
-  | Var b
-
-  | Record (Vector (Text, Expr a b))
-  | Project (Expr a b) Text
-  | Extend Text (Expr a b) (Expr a b)
-  | Update Text (Text, Scope () (Expr a) b) (Expr a b)
-
-  | Int Int
-  | Bool Bool
-  | Many (Vector (Expr a b))
-
-  | Some (Expr a b)
-  | None
-  | FoldOptional (Expr a b) (Text, Scope () (Expr a) b) (Expr a b)
-
-  | AND (Expr a b) (Expr a b)
-  | OR (Expr a b) (Expr a b)
-  | EQ (Expr a b) (Expr a b)
-  | NOT (Expr a b)
-
-  | Embed (Query b a)
-instance Eq2 Expr where
-  liftEq2 f g a b =
-    case a of
-      For name value (fmap Bound.unscope -> m_cond) (Bound.unscope -> body) ->
-        case b of
-          For name' value' (fmap Bound.unscope -> m_cond') (Bound.unscope -> body') ->
-            name == name' &&
-            liftEq2 f g value value' &&
-            liftEq (liftEq2 f (liftEq (liftEq2 f g))) m_cond m_cond' &&
-           n == n' &&
 instance Eq a => Eq1 (Query a) where; liftEq = liftEq2 (==)
 instance (Eq a, Eq b) => Eq (Query a b) where; (==) = eq1
 instance Functor (Query a) where; fmap = fmapDefault

@@ -6,6 +6,8 @@ module Quill.Check
   ( TableInfo(..)
   , QueryEnv(..)
   , resolveType
+  , convertExpr
+  , convertQuery
   , TypeError(..)
   , checkQuery
   , inferQuery
@@ -49,10 +51,10 @@ data TypeError
   | TypeNotInScope Text
   | TableNotInScope Text
   | VariableNotInScope Text
-  | Can'tInferQuery (Query Text Text)
-  | Can'tInferExpr (Expr Text Text)
+  | Can'tInferExpr Syntax.ShowExpr
   | LanguageMismatch Language Language
   | DuplicateRecordFields
+  deriving Show
 
 data TableInfo
   = TableInfo
@@ -344,7 +346,7 @@ inferExpr env expr =
     Syntax.Some a -> do
       (a', aTy) <- inferExpr env a
       pure (a', Syntax.TOptional aTy)
-    Syntax.None -> throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
+    Syntax.None -> throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.FoldOptional z (n, f) value -> do
       (value', valueTy) <- inferExpr env value
       case valueTy of
@@ -371,7 +373,7 @@ inferExpr env expr =
               (\value -> checkExpr env value headTy)
               (Vector.tail values)
           pure (Syntax.Many $ Vector.cons head' tail', Syntax.TMany headTy)
-      | otherwise -> throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
+      | otherwise -> throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.Int{} -> pure (expr, Syntax.TInt)
     Syntax.Bool{} -> pure (expr, Syntax.TBool)
     Syntax.For n value m_cond yield -> do
