@@ -1,6 +1,8 @@
+{-# language BangPatterns #-}
 {-# language FlexibleContexts #-}
 {-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 {-# language ViewPatterns #-}
 module Quill.Check
   ( TableInfo(..)
@@ -89,39 +91,69 @@ resolveType env n =
 compose :: Monad f => Scope () f a -> Scope () f a -> Scope () f a
 compose f (Bound.fromScope -> g) = Bound.toScope $ unvar (\() -> g) (pure . Bound.F) =<< Bound.fromScope f
 
+insertAt ::
+  Int ->
+  Vector (Text, Type) ->
+  (Text, Type) ->
+  (Bound.Scope () (Expr a) b, Vector (Text, Type))
+insertAt 0 fields entry@(field, _) =
+  ( Bound.toScope $ Syntax.Extend field Syntax.None (Syntax.Var $ Bound.B ())
+  , Vector.cons entry fields
+  )
+insertAt ix fields entry@(field, _) =
+  ( Bound.toScope . Syntax.Record $
+    (keep <$> prefix) <>
+    Vector.cons (field, Syntax.None) (keep <$> suffix)
+  , prefix <> Vector.cons entry suffix
+  )
+  where
+    keep (f, _) = (f, Syntax.Project (Syntax.Var (Bound.B ())) f)
+    (prefix, suffix) = Vector.splitAt ix fields
+
 convertFields ::
+  forall m a b.
   MonadError TypeError m =>
   QueryEnv a b ->
   Vector (Text, Type) ->
   Vector (Text, Type) ->
   m (Maybe (Bound.Scope () (Expr a) b))
-convertFields env expected actual =
-  case expected ^? _Cons of
-    Nothing ->
-      case actual ^? _Cons of
-        Nothing -> pure $ Just identity
-        Just{} -> pure Nothing
-    Just ((field, ty), fields) ->
-      case actual ^? _Cons of
-        Just ((field', ty'), fields')
-          | field == field' -> do
-              f <- convertExpr env ty ty'
-              m_g <- convertFields env fields fields'
-              case m_g of
-                Nothing -> pure Nothing
-                Just g -> do
-                  let f' = Bound.toScope $ Syntax.Update field ("__temp", Bound.F <$> f) (Syntax.Var $ Bound.B ())
-                  pure . Just $ compose f' g
-        _ ->
-          case ty of
-            Syntax.TOptional{} -> do
-              m_g <- convertFields env fields actual
-              case m_g of
-                Nothing -> pure Nothing
-                Just g -> do
-                  let f = Bound.toScope $ Syntax.Extend field Syntax.None (Syntax.Var $ Bound.B ())
-                  pure . Just $ compose f g
-            _ -> pure Nothing
+convertFields env e a = do
+  (res, _) <- go 0 a e a
+  pure res
+  where
+    go ::
+      Int ->
+      Vector (Text, Type) ->
+      Vector (Text, Type) ->
+      Vector (Text, Type) ->
+      m (Maybe (Bound.Scope () (Expr a) b), Vector (Text, Type))
+    go !ix full expected actual =
+      case expected ^? _Cons of
+        Nothing ->
+          case actual ^? _Cons of
+            Nothing -> pure (Just  identity, full)
+            Just{} -> pure (Nothing, full)
+        Just ((field, ty), fields) ->
+          case actual ^? _Cons of
+            Just ((field', ty'), fields')
+              | field == field' -> do
+                  (m_g, full') <- go (ix+1) full fields fields'
+                  case m_g of
+                    Nothing -> pure (Nothing, full')
+                    Just g -> do
+                      f <- convertExpr env ty ty'
+                      let f' = Bound.toScope $ Syntax.Update field ("__temp", Bound.F <$> f) (Syntax.Var $ Bound.B ())
+                      pure (Just $ compose g f', full')
+            _ ->
+              case ty of
+                Syntax.TOptional{} -> do
+                  let (f, full') = insertAt ix full (field, ty)
+                  (m_g, full'') <- go (ix+1) full' fields actual
+                  case m_g of
+                    Nothing -> pure (Nothing, full'')
+                    Just g -> do
+                      pure (Just $ compose g f, full'')
+                _ -> pure (Nothing, full)
 
 identity :: Monad f => Bound.Scope () f b
 identity = Bound.toScope (pure $ Bound.B ())
@@ -144,7 +176,7 @@ mapMany f =
       "__temp"
       (Syntax.Var $ Bound.B ())
       Nothing
-      (Bound.toScope $ Bound.F <$> Bound.fromScope f)
+      (Bound.toScope $ unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f)
 
 convertExpr ::
   MonadError TypeError m =>
