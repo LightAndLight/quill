@@ -75,11 +75,29 @@ normaliseExpr :: Expr a b -> Expr a b
 normaliseExpr e =
   case e of
     Syntax.For n value m_cond yield ->
-      Syntax.For
-        n
-        (normaliseExpr value)
-        (hoistScope normaliseExpr <$> m_cond)
-        (hoistScope normaliseExpr yield)
+      let
+        value' = normaliseExpr value
+        m_cond' = hoistScope normaliseExpr <$> m_cond
+        yield' = hoistScope normaliseExpr yield
+      in
+        case value' of
+          Syntax.Many values ->
+            Syntax.Many $
+            case m_cond' of
+              Nothing ->
+                (\x -> normaliseExpr $ Bound.instantiate1 x yield') <$> values
+              Just cond' ->
+                Vector.mapMaybe
+                  (\x ->
+                     case normaliseExpr $ Bound.instantiate1 x cond' of
+                       Syntax.Bool b ->
+                         if b
+                         then Just . normaliseExpr $ Bound.instantiate1 x yield'
+                         else Nothing
+                       _ -> undefined
+                  )
+                  values
+          _ -> Syntax.For n value' m_cond' yield'
     Syntax.Name{} -> e
     Syntax.Var{} -> e
     Syntax.Record values -> Syntax.Record $ (fmap.fmap) normaliseExpr values

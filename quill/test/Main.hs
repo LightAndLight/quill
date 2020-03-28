@@ -6,7 +6,7 @@ import Data.Bifunctor (bimap)
 import Data.Void (Void, absurd)
 import Quill.Check (QueryEnv(..), convertExpr)
 import Quill.Normalise (normaliseExpr)
-import Quill.Syntax (Expr, Type)
+import Quill.Syntax (Expr(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
 
@@ -22,9 +22,13 @@ convertTest :: ConvertTest -> IO ()
 convertTest ct =
   case convertExpr env (to ct) (from ct) of
     Left err -> expectationFailure $ show err
-    Right f ->
-      Syntax.ShowExpr (bimap absurd absurd . normaliseExpr $ Bound.instantiate1 (inputTerm ct) f) `shouldBe`
-      Syntax.ShowExpr (bimap absurd absurd . normaliseExpr $ outputTerm ct)
+    Right f -> do
+      let
+        one = bimap absurd absurd $ Bound.instantiate1 (inputTerm ct) f
+        two = bimap absurd absurd $ outputTerm ct
+      print $ Syntax.ShowExpr one
+      Syntax.ShowExpr (normaliseExpr one) `shouldBe`
+        Syntax.ShowExpr (normaliseExpr two)
   where
    env =
      QueryEnv
@@ -47,11 +51,71 @@ main =
         convertTest $
         ConvertTest
         { from =
-            Syntax.TRecord [("x", Syntax.TInt), ("y", Syntax.TBool)]
+            TRecord [("x", TInt), ("y", TBool)]
         , to =
-            Syntax.TRecord [("x", Syntax.TInt), ("y", Syntax.TBool), ("z", Syntax.TOptional Syntax.TInt)]
+            TRecord [("x", TInt), ("y", TBool), ("z", TOptional TInt)]
         , inputTerm =
-            Syntax.Record [("x", Syntax.Int 1), ("y", Syntax.Bool True)]
+            Record [("x", Int 1), ("y", Bool True)]
         , outputTerm =
-            Syntax.Record [("x", Syntax.Int 1), ("y", Syntax.Bool True), ("z", Syntax.None)]
+            Record [("x", Int 1), ("y", Bool True), ("z", None)]
+        }
+      it "{ x : Int, z : Int } ==> { x : Int, y : Optional Bool, z : Int }" $
+        convertTest $
+        ConvertTest
+        { from =
+            TRecord [("x", TInt), ("z", TInt)]
+        , to =
+            TRecord [("x", TInt), ("y", TOptional TBool), ("z", TInt)]
+        , inputTerm =
+            Record [("x", Int 1), ("z", Int 2)]
+        , outputTerm =
+            Record [("x", Int 1), ("y", None), ("z", Int 2)]
+        }
+      it "{ y : Bool, z : Int } ==> { x : Optional Int, y : Bool, z : Int }" $
+        convertTest $
+        ConvertTest
+        { from =
+            TRecord [("y", TBool), ("z", TInt)]
+        , to =
+            TRecord [("x", TOptional TInt), ("y", TBool), ("z", TInt)]
+        , inputTerm =
+            Record [("y", Bool True), ("z", Int 2)]
+        , outputTerm =
+            Record [("x", None), ("y", Bool True), ("z", Int 2)]
+        }
+      it "{ } ==> { x : Optional Int, y : Optional Bool, z : Optional Int }" $
+        convertTest $
+        ConvertTest
+        { from =
+            TRecord []
+        , to =
+            TRecord [("x", TOptional TInt), ("y", TOptional TBool), ("z", TOptional TInt)]
+        , inputTerm =
+            Record []
+        , outputTerm =
+            Record [("x", None), ("y", None), ("z", None)]
+        }
+      it "Many { x : Int } ==> Many { x : Int, y : Optional Bool }" $
+        convertTest $
+        ConvertTest
+        { from =
+            TMany $ TRecord [("x", TInt)]
+        , to =
+            TMany $ TRecord [("x", TInt), ("y", TOptional TBool)]
+        , inputTerm =
+            Many
+            [ Record [("x", Int 0)]
+            , Record [("x", Int 1), ("y", Some $ Bool False)]
+            , Record [("x", Int 2)]
+            , Record [("x", Int 3), ("y", Some $ Bool True)]
+            , Record [("x", Int 4), ("y", None)]
+            ]
+        , outputTerm =
+            Many
+            [ Record [("x", Int 0), ("y", None)]
+            , Record [("x", Int 1), ("y", Some $ Bool False)]
+            , Record [("x", Int 2), ("y", None)]
+            , Record [("x", Int 3), ("y", Some $ Bool True)]
+            , Record [("x", Int 4), ("y", None)]
+            ]
         }
