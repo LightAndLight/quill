@@ -20,7 +20,7 @@ where
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad (unless, when)
-import Control.Monad.Except (MonadError, throwError, runExceptT, withExceptT)
+import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
 import Control.Monad.State (MonadState, evalStateT, gets, modify)
 import Data.Foldable (traverse_)
 import Data.Map (Map)
@@ -46,6 +46,7 @@ data TypeError
   | Can'tInferQuery (Query Expr Text)
   | Can'tInferExpr (Expr Text)
   | LanguageMismatch Language Language
+  | DuplicateRecordFields
 
 data TableInfo
   = TableInfo
@@ -129,6 +130,28 @@ language env l =
   unless (l == _qeLanguage env) . throwError $
   LanguageMismatch l (_qeLanguage env)
 
+checkType ::
+  MonadError TypeError m =>
+  Type ->
+  m ()
+checkType ty =
+  case ty of
+    Syntax.TRecord fields ->
+      let
+        names = foldr (Set.insert . fst) mempty fields
+      in
+        if Set.size names == Vector.length fields
+        then traverse_ (checkType . snd) fields
+        else throwError DuplicateRecordFields
+    Syntax.TUnit -> pure ()
+    Syntax.TBool -> pure ()
+    Syntax.TMany a -> checkType a
+    Syntax.TQuery a -> checkType a
+    Syntax.TOptional a -> checkType a
+    Syntax.TName{} -> pure ()
+    Syntax.TInt -> pure ()
+
+
 checkQuery ::
   MonadError TypeError m =>
   QueryEnv a ->
@@ -136,6 +159,7 @@ checkQuery ::
   Type ->
   m ()
 checkQuery env query ty = do
+  checkType ty
   ty' <- inferQuery env query
   convert env ty ty'
 
@@ -246,8 +270,14 @@ inferExpr env expr =
         pure
         (Map.lookup n $ _qeGlobals env)
     Syntax.Record fields ->
-      Syntax.TRecord <$>
-     (traverse.traverse) (inferExpr env) fields
+      let
+        names = foldr (Set.insert . fst) mempty fields
+      in
+        if Set.size names == Vector.length fields
+        then
+          Syntax.TRecord <$>
+          (traverse.traverse) (inferExpr env) fields
+        else throwError DuplicateRecordFields
     Syntax.Project val field -> do
       valTy <- inferExpr env val
       case valTy of
@@ -317,7 +347,8 @@ checkTableItem _ item =
     Syntax.Field name ty -> do
       m_ty <- gets (Map.lookup name . fieldsSeen)
       case m_ty of
-        Nothing ->
+        Nothing -> do
+          mapError TypeError (checkType ty)
           modify $ \s -> s { fieldsSeen = Map.insert name ty (fieldsSeen s) }
         Just{} -> throwError $ FieldAlreadyDefined name
     Syntax.Constraint name args ->
@@ -346,7 +377,10 @@ checkDeclArg ::
 checkDeclArg _ (name, ty) = do
   seen <- gets $ Set.member name
   when seen . throwError $ DuplicateArgument name
-  pure ty
+  ty <$ mapError TypeError (checkType ty)
+
+mapError :: MonadError b m => (a -> b) -> ExceptT a m x -> m x
+mapError f = (either throwError pure =<<) . runExceptT . withExceptT f
 
 checkDecl ::
   MonadError DeclError m =>
@@ -363,9 +397,9 @@ checkDecl env decl =
         (traverse_ (checkTableItem env) items)
         (TableItemState False mempty)
       pure decl
-    Syntax.Type name _ ->
+    Syntax.Type name ty ->
       case Map.lookup name (_deTypes env) of
-        Nothing -> pure decl
+        Nothing -> decl <$ mapError TypeError (checkType ty)
         Just{} -> throwError $ TypeAlreadyDefined name
     Syntax.Query name args retTy body ->
       case Map.lookup name (_deGlobals env) of
@@ -386,7 +420,7 @@ checkDecl env decl =
               , _qeTables = _deTables env
               }
 
-          (either throwError pure =<<) . runExceptT . withExceptT TypeError $
+          mapError TypeError $
             checkQuery queryEnv body retTy
           pure decl
     Syntax.Function name args retTy body ->
