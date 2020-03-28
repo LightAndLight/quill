@@ -23,14 +23,29 @@ data Value
   | Int Int
   | Bool Bool
   | Many (Vector Value)
+  | Some Value
+  | None
 
-toExpr :: Value -> Expr Void
+toExpr :: Value -> Expr Void Void
 toExpr value =
   case value of
     Record fields -> Syntax.Record $ (fmap.fmap) toExpr fields
     Int n -> Syntax.Int n
     Bool b -> Syntax.Bool b
     Many values -> Syntax.Many $ toExpr <$> values
+    None -> Syntax.None
+    Some a -> Syntax.Some (toExpr a)
+
+fromExpr :: Expr Void Void -> Maybe Value
+fromExpr value =
+  case value of
+    Syntax.Record fields -> Record <$> (traverse.traverse) fromExpr fields
+    Syntax.Int n -> Just $ Int n
+    Syntax.Bool b -> Just $ Bool b
+    Syntax.Many values -> Many <$> traverse fromExpr values
+    Syntax.None -> Just None
+    Syntax.Some a -> Some <$> fromExpr a
+    _ -> Nothing
 
 class Marshall a where
   typeOf :: Proxy a -> Type
@@ -40,12 +55,12 @@ class Marshall a where
 fromValue ::
   forall a.
   Marshall a =>
-  QueryEnv Void ->
+  QueryEnv Void Void ->
   Value ->
   Either TypeError a
 fromValue env value = do
-  checkExpr env (toExpr value) $ typeOf (Proxy :: Proxy a)
-  case fromValueUnchecked value of
+  value' <- checkExpr env (toExpr value) $ typeOf (Proxy :: Proxy a)
+  case fromValueUnchecked =<< fromExpr value' of
     Just a -> pure a
     Nothing -> error "impossible"
 

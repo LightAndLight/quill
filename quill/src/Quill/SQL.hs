@@ -1,4 +1,5 @@
 {-# language OverloadedStrings #-}
+{-# language ViewPatterns #-}
 module Quill.SQL where
 
 import qualified Bound
@@ -19,7 +20,7 @@ import Quill.Check (QueryEnv, resolveType)
 import Quill.Syntax (Expr, Query, TableItem, Type)
 import qualified Quill.Syntax as Syntax
 
-columnType :: QueryEnv Void -> Type -> ByteString
+columnType :: QueryEnv Void Void -> Type -> ByteString
 columnType env ty =
   case ty of
     Syntax.TRecord{} -> error "todo: records as column types"
@@ -35,7 +36,7 @@ columnType env ty =
     Syntax.TInt -> "int NOT NULL"
 
 createTable ::
-  QueryEnv Void ->
+  QueryEnv Void Void ->
   Text ->
   Vector TableItem ->
   Lazy.ByteString
@@ -116,59 +117,74 @@ parens a = "(" <> a <> ")"
 
 -- kleisli composition
 composeQuery ::
-  Query Expr (Bound.Var () a) ->
-  Query Expr (Bound.Var () a) ->
-  Query Expr (Bound.Var () a)
-composeQuery f g =
-  Syntax.Bind g "__temp" $ Bound.F <$> f
+  Bound.Scope () (Query a) b ->
+  Bound.Scope () (Query a) b ->
+  Bound.Scope () (Query a) b
+composeQuery f (Bound.fromScope -> g) =
+  Bound.toScope $ Syntax.Bind g "__temp" (Bound.F <$> f)
 
 query ::
   (a -> Builder.Builder) ->
-  Query Expr a ->
+  (b -> Builder.Builder) ->
+  Query a b ->
   Builder.Builder
-query f q =
+query f g q =
   case q of
+    Syntax.QVar a -> g a
+    Syntax.QName n -> error "SQL.query name" n
     Syntax.SelectFrom table ->
       "SELECT * FROM " <>
       Builder.byteString (encodeUtf8 table)
     Syntax.InsertIntoReturning value table ->
       "INSERT " <>
-      expr f value <>
+      expr g f value <>
       " INTO " <>
       Builder.byteString (encodeUtf8 table) <>
       " RETURNING *"
     Syntax.InsertInto value table ->
       "INSERT " <>
-      expr f value <>
+      expr g f value <>
       " INTO " <>
       Builder.byteString (encodeUtf8 table)
     Syntax.Bind q' _ rest ->
       case q' of
         Syntax.Bind q'' n' rest' ->
-          query f $
+          query f g $
           Syntax.Bind q'' n' (composeQuery rest rest')
         Syntax.Return value ->
-          query f (rest Bound.>>>= unvar (\() -> value) pure)
+          query f g $
+          Syntax.bisubstQuery
+            Syntax.Var
+            (unvar (\() -> Syntax.Return value) Syntax.QVar)
+            (Bound.fromScope rest)
         _ ->
           query
-            (unvar (\() -> parens $ query f q') f)
-            rest
-    Syntax.Return value -> expr f value
+            f
+            (unvar (\() -> parens $ query f g q') g)
+            (Bound.fromScope rest)
+    Syntax.Return value -> expr g f value
 
 expr ::
   (a -> Builder.Builder) ->
-  Expr a ->
+  (b -> Builder.Builder) ->
+  Expr a b ->
   Builder.Builder
-expr f e =
+expr f g e =
   case e of
+    Syntax.Embed a -> query g f a
+    Syntax.Update{} -> error "SQL.expr update"
+    Syntax.Extend{} -> error "SQL.expr extend"
+    Syntax.Some{} -> error "SQL.expr some"
+    Syntax.None -> error "SQL.expr none"
+    Syntax.FoldOptional{} -> error "SQL.expr foldoptional"
     Syntax.For n value m_cond yield ->
       let
-        f' = unvar (\() -> Builder.byteString $ encodeUtf8 n) f
+        g' = unvar (\() -> Builder.byteString $ encodeUtf8 n) g
       in
       "SELECT " <>
       (case Bound.fromScope yield of
          Syntax.Var (Bound.B ()) -> "*"
-         _ -> expr f' (Bound.fromScope yield)
+         _ -> expr f g' (Bound.fromScope yield)
       ) <>
       " FROM " <>
       (case value of
@@ -178,14 +194,14 @@ expr f e =
          Syntax.Int{} -> id
          Syntax.Bool{} -> id
          _ -> parens
-      ) (expr f value) <>
+      ) (expr f g value) <>
       " AS " <>
       Builder.byteString (encodeUtf8 n) <>
       case m_cond of
         Nothing -> mempty
         Just cond ->
           " WHERE " <>
-          expr f' (Bound.fromScope cond)
+          expr f g' (Bound.fromScope cond)
     Syntax.Name n ->
       error "todo: SQL.expr name" n
     Syntax.Project value field ->
@@ -196,18 +212,26 @@ expr f e =
          Syntax.Int{} -> id
          Syntax.Bool{} -> id
          _ -> parens
-      ) (expr f value) <>
+      ) (expr f g value) <>
       "." <>
       Builder.byteString (encodeUtf8 field)
-    Syntax.Var n -> f n
+    Syntax.Var n -> g n
     Syntax.Record fields ->
       fold . intersperse ", " $
-      foldr ((:) . expr f . snd) [] fields
+      foldr
+        (\field ->
+           case snd field of
+             Syntax.Some a -> (:) (expr f g a)
+             Syntax.None -> id
+             a -> (:) (expr f g a)
+        )
+        []
+        fields
     Syntax.Int n -> Builder.stringUtf8 $ show n
     Syntax.Bool b -> if b then "true" else "false"
     Syntax.Many values ->
       fold . intersperse ", " $
-      foldr ((:) . parens . expr f) [] values
+      foldr ((:) . parens . expr f g) [] values
     Syntax.AND a b ->
       (case a of
          Syntax.Project{} -> id
@@ -219,7 +243,7 @@ expr f e =
          Syntax.EQ{} -> id
          Syntax.OR{} -> id
          _ -> parens
-      ) (expr f a) <>
+      ) (expr f g a) <>
       " AND " <>
       (case b of
          Syntax.Project{} -> id
@@ -231,7 +255,7 @@ expr f e =
          Syntax.EQ{} -> id
          Syntax.OR{} -> id
          _ -> parens
-      ) (expr f b)
+      ) (expr f g b)
     Syntax.OR a b ->
       (case a of
          Syntax.Project{} -> id
@@ -242,7 +266,7 @@ expr f e =
          Syntax.NOT{} -> id
          Syntax.EQ{} -> id
          _ -> parens
-      ) (expr f a) <>
+      ) (expr f g a) <>
       " OR " <>
       (case b of
          Syntax.Project{} -> id
@@ -253,7 +277,7 @@ expr f e =
          Syntax.NOT{} -> id
          Syntax.EQ{} -> id
          _ -> parens
-      ) (expr f b)
+      ) (expr f g b)
     Syntax.EQ a b ->
       (case a of
          Syntax.Project{} -> id
@@ -263,7 +287,7 @@ expr f e =
          Syntax.Bool{} -> id
          Syntax.NOT{} -> id
          _ -> parens
-      ) (expr f a) <>
+      ) (expr f g a) <>
       " = " <>
       (case b of
          Syntax.Project{} -> id
@@ -273,7 +297,7 @@ expr f e =
          Syntax.Bool{} -> id
          Syntax.NOT{} -> id
          _ -> parens
-      ) (expr f b)
+      ) (expr f g b)
     Syntax.NOT a ->
       "NOT " <>
       (case a of
@@ -283,4 +307,4 @@ expr f e =
          Syntax.Int{} -> id
          Syntax.Bool{} -> id
          _ -> parens
-      ) (expr f a)
+      ) (expr f g a)

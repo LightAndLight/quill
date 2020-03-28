@@ -24,6 +24,7 @@ library
                      , bound
                      , bytestring
                      , containers
+                     , lens
                      , mtl
                      , text
                      , transformers
