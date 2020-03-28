@@ -31,7 +31,7 @@ import Data.Text (Text)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
-import Quill.Syntax (Decl, Expr, Query, TableItem, Type)
+import Quill.Syntax (Decl, Expr, Language, Query, TableItem, Type)
 import qualified Quill.Syntax as Syntax
 
 data TypeError
@@ -45,6 +45,7 @@ data TypeError
   | VariableNotInScope Text
   | Can'tInferQuery (Query Expr Text)
   | Can'tInferExpr (Expr Text)
+  | LanguageMismatch Language Language
 
 data TableInfo
   = TableInfo
@@ -54,7 +55,8 @@ data TableInfo
 
 data QueryEnv a
   = QueryEnv
-  { _qeVarNames :: a -> Text
+  { _qeLanguage :: Language
+  , _qeVarNames :: a -> Text
   , _qeLocals :: a -> Type
   , _qeGlobals :: Map Text Type
   , _qeTypes :: Map Text Type
@@ -101,6 +103,10 @@ convert env expected actual =
       case actual of
         Syntax.TInt -> pure ()
         _ -> throwError $ TypeMismatch expected actual
+    Syntax.TUnit ->
+      case actual of
+        Syntax.TUnit -> pure ()
+        _ -> throwError $ TypeMismatch expected actual
     Syntax.TBool ->
       case actual of
         Syntax.TBool -> pure ()
@@ -117,6 +123,11 @@ convert env expected actual =
       case actual of
         Syntax.TOptional a' -> convert env a a'
         _ -> throwError $ TypeMismatch expected actual
+
+language :: MonadError TypeError m => QueryEnv a -> Language -> m ()
+language env l =
+  unless (l == _qeLanguage env) . throwError $
+  LanguageMismatch l (_qeLanguage env)
 
 checkQuery ::
   MonadError TypeError m =>
@@ -141,6 +152,13 @@ inferQuery env query =
         Map.lookup table (_qeTables env)
       pure $ Syntax.TQuery (_tiReadType info)
     Syntax.InsertInto value table -> do
+      info <-
+        maybe (throwError $ TableNotInScope table) pure $
+        Map.lookup table (_qeTables env)
+      checkExpr env value (_tiWriteType info)
+      pure $ Syntax.TQuery Syntax.TUnit
+    Syntax.InsertIntoReturning value table -> do
+      language env Syntax.Postgresql
       info <-
         maybe (throwError $ TableNotInScope table) pure $
         Map.lookup table (_qeTables env)
@@ -257,7 +275,8 @@ inferExpr env expr =
 
 data DeclEnv
   = DeclEnv
-  { _deTypes :: Map Text Type
+  { _deLanguage :: Language
+  , _deTypes :: Map Text Type
   , _deTables :: Map Text TableInfo
   , _deGlobals :: Map Text Type
   }
@@ -359,7 +378,8 @@ checkDecl env decl =
           let
             queryEnv =
               QueryEnv
-              { _qeVarNames = unvar (fst . (args Vector.!)) absurd
+              { _qeLanguage = _deLanguage env
+              , _qeVarNames = unvar (fst . (args Vector.!)) absurd
               , _qeLocals = unvar (argTys Vector.!) absurd
               , _qeGlobals = _deGlobals env
               , _qeTypes = _deTypes env
@@ -377,7 +397,8 @@ checkDecl env decl =
           let
             queryEnv =
               QueryEnv
-              { _qeVarNames = unvar (fst . (args Vector.!)) absurd
+              { _qeLanguage = _deLanguage env
+              , _qeVarNames = unvar (fst . (args Vector.!)) absurd
               , _qeLocals = unvar (argTys Vector.!) absurd
               , _qeGlobals = _deGlobals env
               , _qeTypes = _deTypes env
