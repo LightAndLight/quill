@@ -4,7 +4,7 @@ module Main where
 import qualified Bound
 import Data.Bifunctor (bimap)
 import Data.Void (Void, absurd)
-import Quill.Check (QueryEnv(..), convertExpr)
+import Quill.Check (QueryEnv(..), checkExpr)
 import Quill.Normalise (normaliseExpr)
 import Quill.Syntax (Expr(..), Type(..))
 import qualified Quill.Syntax as Syntax
@@ -19,16 +19,14 @@ data ConvertTest
   }
 
 convertTest :: ConvertTest -> IO ()
-convertTest ct =
-  case convertExpr env (to ct) (from ct) of
-    Left err -> expectationFailure $ show err
-    Right f -> do
-      let
-        one = bimap absurd absurd $ Bound.instantiate1 (inputTerm ct) f
-        two = bimap absurd absurd $ outputTerm ct
-      print $ Syntax.ShowExpr one
-      Syntax.ShowExpr (normaliseExpr one) `shouldBe`
-        Syntax.ShowExpr (normaliseExpr two)
+convertTest ct = do
+  output <- either (error . show) pure $ checkExpr env (inputTerm ct) (to ct)
+  let
+    one = bimap absurd absurd $ outputTerm ct
+    two = bimap absurd absurd output
+  print $ Syntax.ShowExpr one
+  Syntax.ShowExpr (normaliseExpr one) `shouldBe`
+    Syntax.ShowExpr (normaliseExpr two)
   where
    env =
      QueryEnv
@@ -106,6 +104,30 @@ main =
             Many
             [ Record [("x", Int 0)]
             , Record [("x", Int 1), ("y", Some $ Bool False)]
+            , Record [("x", Int 2)]
+            , Record [("x", Int 3), ("y", Some $ Bool True)]
+            , Record [("x", Int 4), ("y", None)]
+            ]
+        , outputTerm =
+            Many
+            [ Record [("x", Int 0), ("y", None)]
+            , Record [("x", Int 1), ("y", Some $ Bool False)]
+            , Record [("x", Int 2), ("y", None)]
+            , Record [("x", Int 3), ("y", Some $ Bool True)]
+            , Record [("x", Int 4), ("y", None)]
+            ]
+        }
+      it "Many { x : Int } =/> Many { x : Int, y : Optional Bool }" $
+        convertTest $
+        ConvertTest
+        { from =
+            TMany $ TRecord [("x", TInt)]
+        , to =
+            TMany $ TRecord [("x", TInt), ("y", TOptional TBool)]
+        , inputTerm =
+            Many
+            [ Record [("x", Int 0)]
+            , Record [("x", Int 1), ("y", Bool False)]
             , Record [("x", Int 2)]
             , Record [("x", Int 3), ("y", Some $ Bool True)]
             , Record [("x", Int 4), ("y", None)]

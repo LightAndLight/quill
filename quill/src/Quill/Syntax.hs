@@ -156,9 +156,13 @@ data Expr a b
   | Project (Expr a b) Text
   | Extend Text (Expr a b) (Expr a b)
   | Update Text (Text, Scope () (Expr a) b) (Expr a b)
+  | HasField (Expr a b) Text
 
   | Int Int
+
   | Bool Bool
+  | IfThenElse (Expr a b) (Expr a b) (Expr a b)
+
   | Many (Vector (Expr a b))
 
   | Some (Expr a b)
@@ -194,6 +198,12 @@ instance Eq2 Expr where
         case b of
           Record fields' -> liftEq (liftEq (liftEq2 f g)) fields fields'
           _ -> False
+      HasField record field ->
+        case b of
+          HasField record' field' ->
+            liftEq2 f g record record' &&
+            field == field'
+          _ -> False
       Project record field ->
         case b of
           Project record' field' ->
@@ -222,6 +232,13 @@ instance Eq2 Expr where
       Bool x ->
         case b of
           Bool x' -> x == x'
+          _ -> False
+      IfThenElse x y z ->
+        case b of
+          IfThenElse x' y' z' ->
+            liftEq2 f g x x' &&
+            liftEq2 f g y y' &&
+            liftEq2 f g z z'
           _ -> False
       Many values ->
         case b of
@@ -291,10 +308,13 @@ instance Bitraversable Expr where
       Var b -> Var <$> g b
       Record a -> Record <$> (traverse.traverse) (bitraverse f g) a
       Project a b -> (\a' -> Project a' b) <$> bitraverse f g a
+      HasField a b -> (\a' -> HasField a' b) <$> bitraverse f g a
       Extend a b c -> Extend a <$> bitraverse f g b <*> bitraverse f g c
       Update a (n, b) c -> (\b' -> Update a (n, b')) <$> bitraverseScope f g b <*> bitraverse f g c
       Int a -> pure $ Int a
       Bool a -> pure $ Bool a
+      IfThenElse a b c ->
+        IfThenElse <$> bitraverse f g a <*> bitraverse f g b <*> bitraverse f g c
       Many a -> Many <$> traverse (bitraverse f g) a
       Some a -> Some <$> bitraverse f g a
       None -> pure None
@@ -331,6 +351,7 @@ bisubstExpr f g e =
 
     Record fields -> Record $ (fmap.fmap) (bisubstExpr f g) fields
     Project value field -> Project (bisubstExpr f g value) field
+    HasField value field -> HasField (bisubstExpr f g value) field
     Extend field value rest -> Extend field (bisubstExpr f g value) (bisubstExpr f g rest)
     Update field (n, func) rest ->
       Update
@@ -340,6 +361,7 @@ bisubstExpr f g e =
 
     Int n -> Int n
     Bool b -> Bool b
+    IfThenElse a b c -> IfThenElse (bisubstExpr f g a) (bisubstExpr f g b) (bisubstExpr f g c)
     Many values -> Many $ bisubstExpr f g <$> values
 
     Some a -> Some (bisubstExpr f g a)
@@ -412,6 +434,7 @@ prettyExpr f g e =
         )
         []
         values
+    HasField record field -> prettyExpr f g record <> Pretty.char '?' <> Pretty.text (Text.unpack field)
     Project value field ->
       prettyExpr f g value <> Pretty.dot <> Pretty.text (Text.unpack field)
     Extend field value record ->
@@ -438,6 +461,15 @@ prettyExpr f g e =
       ]
     Int n -> Pretty.text $ show n
     Bool b -> Pretty.text $ show b
+    IfThenElse a b c ->
+      Pretty.hsep
+      [ Pretty.text "if"
+      , prettyExpr f g a
+      , Pretty.text "then"
+      , prettyExpr f g b
+      , Pretty.text "else"
+      , prettyExpr f g c
+      ]
     Many values ->
       Pretty.brackets . fold . List.intersperse (Pretty.comma <> Pretty.space) $
       foldr ((:) . prettyExpr f g) [] values

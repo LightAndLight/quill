@@ -96,17 +96,19 @@ insertAt ::
   Vector (Text, Type) ->
   (Text, Type) ->
   (Bound.Scope () (Expr a) b, Vector (Text, Type))
-insertAt 0 fields entry@(field, _) =
-  ( Bound.toScope $ Syntax.Extend field Syntax.None (Syntax.Var $ Bound.B ())
-  , Vector.cons entry fields
-  )
 insertAt ix fields entry@(field, _) =
-  ( Bound.toScope . Syntax.Record $
-    (keep <$> prefix) <>
-    Vector.cons (field, Syntax.None) (keep <$> suffix)
+  ( Bound.toScope $
+    Syntax.IfThenElse
+      (Syntax.HasField (Syntax.Var $ Bound.B ()) field)
+      (Syntax.Var $ Bound.B ())
+      extended
   , prefix <> Vector.cons entry suffix
   )
   where
+    extended =
+      Syntax.Record $
+      (keep <$> prefix) <>
+      Vector.cons (field, Syntax.None) (keep <$> suffix)
     keep (f, _) = (f, Syntax.Project (Syntax.Var (Bound.B ())) f)
     (prefix, suffix) = Vector.splitAt ix fields
 
@@ -352,14 +354,22 @@ checkExpr ::
   m (Expr a b)
 checkExpr env expr ty = do
   case expr of
-    Syntax.Many values | Vector.length values == 0 ->
+    Syntax.Many values ->
       case ty of
-        Syntax.TMany{} -> pure expr
+        Syntax.TMany ty' -> Syntax.Many <$> traverse (\e -> checkExpr env e ty') values
         _ -> throwError $ ExpectedMany ty
     Syntax.None ->
       case ty of
         Syntax.TOptional{} -> pure expr
         _ -> throwError $ ExpectedOptional ty
+    Syntax.HasField record field -> do
+      (record', recordTy) <- inferExpr env record
+      case recordTy of
+        Syntax.TRecord{} ->
+          case ty of
+            Syntax.TBool -> pure $ Syntax.HasField record' field
+            _ -> throwError $ TypeMismatch ty Syntax.TBool
+        _ -> throwError $ ExpectedRecord recordTy
     _ -> do
       (expr', ty') <- inferExpr env expr
       f <- convertExpr env ty ty'
@@ -405,9 +415,15 @@ inferExpr env expr =
               (\value -> checkExpr env value headTy)
               (Vector.tail values)
           pure (Syntax.Many $ Vector.cons head' tail', Syntax.TMany headTy)
-      | otherwise -> throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
+      | otherwise ->
+          throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.Int{} -> pure (expr, Syntax.TInt)
     Syntax.Bool{} -> pure (expr, Syntax.TBool)
+    Syntax.IfThenElse a b c -> do
+      a' <- checkExpr env a Syntax.TBool
+      (b', bTy) <- inferExpr env b
+      c' <- checkExpr env c bTy
+      pure (Syntax.IfThenElse a' b' c', bTy)
     Syntax.For n value m_cond yield -> do
       (value', valTy) <- inferExpr env value
       case valTy of
@@ -501,6 +517,9 @@ inferExpr env expr =
             Nothing -> throwError $ MissingField valTy field
             Just (_, fieldTy) -> pure (Syntax.Project val' field, fieldTy)
         _ -> throwError $ ExpectedRecord valTy
+    Syntax.HasField{} ->
+      throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
+
     Syntax.Var n -> pure (Syntax.Var n, _qeLocalVars env n)
 
     Syntax.AND a b -> do

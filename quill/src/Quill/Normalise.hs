@@ -82,21 +82,32 @@ normaliseExpr e =
       in
         case value' of
           Syntax.Many values ->
-            Syntax.Many $
             case m_cond' of
               Nothing ->
+                Syntax.Many $
                 (\x -> normaliseExpr $ Bound.instantiate1 x yield') <$> values
               Just cond' ->
-                Vector.mapMaybe
-                  (\x ->
-                     case normaliseExpr $ Bound.instantiate1 x cond' of
-                       Syntax.Bool b ->
-                         if b
-                         then Just . normaliseExpr $ Bound.instantiate1 x yield'
-                         else Nothing
-                       _ -> undefined
-                  )
-                  values
+                let
+                  m_conds =
+                    traverse
+                      (\x ->
+                        case normaliseExpr $ Bound.instantiate1 x cond' of
+                          Syntax.Bool b -> Just b
+                          _ -> Nothing
+                      )
+                      values
+                in
+                  case m_conds of
+                    Nothing -> Syntax.For n value' m_cond' yield'
+                    Just conds ->
+                      Syntax.Many $
+                      Vector.mapMaybe
+                        (\(b, v) ->
+                           if b
+                           then Just . normaliseExpr $ Bound.instantiate1 v yield'
+                           else Nothing
+                        )
+                        (Vector.zip conds values)
           _ -> Syntax.For n value' m_cond' yield'
     Syntax.Name{} -> e
     Syntax.Var{} -> e
@@ -108,6 +119,13 @@ normaliseExpr e =
             Just (_, result) -> result
             _ -> undefined
         value' -> Syntax.Project value' field
+    Syntax.HasField value field ->
+      case normaliseExpr value of
+        Syntax.Record values ->
+          case Vector.find ((field ==) . fst) values of
+            Just{} -> Syntax.Bool True
+            _ -> Syntax.Bool False
+        value' -> Syntax.HasField value' field
     Syntax.Extend field value record ->
       let
         value' = normaliseExpr value
@@ -131,6 +149,15 @@ normaliseExpr e =
           record' -> Syntax.Update field (n, func') record'
     Syntax.Int{} -> e
     Syntax.Bool{} -> e
+    Syntax.IfThenElse a b c ->
+      let
+        a' = normaliseExpr a
+        b' = normaliseExpr b
+        c' = normaliseExpr c
+      in
+        case a' of
+          Syntax.Bool cond -> if cond then b' else c'
+          _ -> Syntax.IfThenElse a' b' c'
     Syntax.Many values -> Syntax.Many $ normaliseExpr <$> values
     Syntax.Some value -> Syntax.Some $ normaliseExpr value
     Syntax.None -> e

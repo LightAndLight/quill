@@ -185,6 +185,8 @@ expr f g e =
           expr f g' (Bound.fromScope cond)
     Syntax.Name n ->
       error "todo: SQL.expr name" n
+    Syntax.HasField value field ->
+      error "todo: SQL.expr hasfield" value field
     Syntax.Project value field ->
       (case value of
          Syntax.Project{} -> id
@@ -210,6 +212,7 @@ expr f g e =
         fields
     Syntax.Int n -> Builder.stringUtf8 $ show n
     Syntax.Bool b -> if b then "true" else "false"
+    Syntax.IfThenElse a b c -> error "SQL.expr ifthenelse" a b c
     Syntax.Many values ->
       fold . intersperse ", " $
       foldr ((:) . parens . expr f g) [] values
