@@ -1,6 +1,7 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 module Quill.Syntax
   ( Type(..)
+  , Language(..)
   , Query(..)
   , Expr(..)
   , Decl(..)
@@ -18,8 +19,14 @@ import Data.Text (Text)
 import Data.Vector (Vector)
 import Data.Void (Void)
 
+data Language
+  = SQL2003
+  | Postgresql
+  deriving Eq
+
 data Type
   = TRecord (Vector (Text, Type))
+  | TUnit
   | TBool
   | TMany Type
   | TQuery Type
@@ -35,6 +42,7 @@ data TableItem
 data Query f a
   = SelectFrom Text
   | InsertInto (f a) Text
+  | InsertIntoReturning (f a) Text
   | Bind (Query f a) Text (Query f (Var () a))
   | Return (f a)
   deriving (Functor, Foldable, Traversable)
@@ -43,6 +51,7 @@ instance Bound Query where
     case a of
       SelectFrom n -> SelectFrom n
       InsertInto b c -> InsertInto (b >>= f) c
+      InsertIntoReturning b c -> InsertIntoReturning (b >>= f) c
       Bind b c d ->
         Bind (b >>>= f) c (d >>>= unvar (pure . B) (fmap F . f))
       Return b -> Return (b >>= f)

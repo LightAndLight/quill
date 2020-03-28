@@ -23,10 +23,11 @@ columnType :: QueryEnv Void -> Type -> ByteString
 columnType env ty =
   case ty of
     Syntax.TRecord{} -> error "todo: records as column types"
+    Syntax.TUnit -> "blob NOT NULL"
     Syntax.TBool -> "boolean NOT NULL"
     Syntax.TMany{} -> error "todo: many as column types???"
-    Syntax.TOptional{} -> error "todo: many as column types???"
-    Syntax.TQuery{} -> error "todo: many as column types???"
+    Syntax.TOptional{} -> error "todo: optional as column types???"
+    Syntax.TQuery{} -> error "todo: query as column types???"
     Syntax.TName n ->
       case resolveType env n of
         Left{} -> undefined
@@ -130,12 +131,17 @@ query f q =
     Syntax.SelectFrom table ->
       "SELECT * FROM " <>
       Builder.byteString (encodeUtf8 table)
-    Syntax.InsertInto value table ->
+    Syntax.InsertIntoReturning value table ->
       "INSERT " <>
       expr f value <>
       " INTO " <>
       Builder.byteString (encodeUtf8 table) <>
       " RETURNING *"
+    Syntax.InsertInto value table ->
+      "INSERT " <>
+      expr f value <>
+      " INTO " <>
+      Builder.byteString (encodeUtf8 table)
     Syntax.Bind q' _ rest ->
       case q' of
         Syntax.Bind q'' n' rest' ->
