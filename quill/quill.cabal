@@ -21,6 +21,7 @@ library
                      , Quill.SQL
                      , Quill.Syntax
   build-depends:       base ^>=4.12.0.0
+                     , ansi-wl-pprint
                      , bound
                      , bytestring
                      , containers
