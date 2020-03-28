@@ -17,17 +17,23 @@ where
 import Prelude hiding (Ordering(..))
 
 import Bound (Scope(..))
+import qualified Bound
 import Bound.Scope (bitraverseScope)
 import Bound.Var (Var(..), unvar)
 import Control.Monad (ap)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Bifoldable (Bifoldable(..))
 import Data.Bitraversable (Bitraversable(..), bimapDefault, bifoldMapDefault)
+import Data.Foldable (fold)
 import Data.Functor.Classes (Eq2(..), Eq1(..), eq1)
+import qualified Data.List as List
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Traversable (fmapDefault, foldMapDefault)
 import Data.Vector (Vector)
 import Data.Void (Void)
+import Text.PrettyPrint.ANSI.Leijen (Doc)
+import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 
 data Language
   = SQL2003
@@ -266,7 +272,8 @@ instance Eq2 Expr where
 instance Eq a => Eq1 (Expr a) where; liftEq = liftEq2 (==)
 instance (Eq a, Eq b) => Eq (Expr a b) where; (==) = eq1
 newtype ShowExpr = ShowExpr (Expr Text Text) deriving Eq
-instance Show ShowExpr where; show _ = "<expr>"
+instance Show ShowExpr where
+  show (ShowExpr e) = show $ prettyExpr (Pretty.text . Text.unpack) (Pretty.text . Text.unpack) e
 instance Functor (Expr a) where; fmap = fmapDefault
 instance Foldable (Expr a) where; foldMap = foldMapDefault
 instance Traversable (Expr a) where; traverse = bitraverse pure
@@ -363,3 +370,101 @@ data Decl
       (Vector (Text, Type))
       Type
       (Scope Int (Expr Void) Void)
+
+prettyExpr :: (a -> Doc) -> (b -> Doc) -> Expr a b -> Doc
+prettyExpr f g e =
+  case e of
+    For n value m_cond (Bound.fromScope -> yield) ->
+      let
+        n' = Pretty.text $ Text.unpack n
+      in
+        Pretty.vsep $
+        [ Pretty.hsep
+          [ Pretty.text "for"
+          , Pretty.text $ Text.unpack n
+          , Pretty.text "in"
+          , prettyExpr f g value
+          ]
+        ] <>
+        (maybe
+          []
+          (\(Bound.fromScope -> cond) ->
+            [ Pretty.hsep
+              [ Pretty.text "where"
+              , prettyExpr f (unvar (\() -> n') g) cond
+              ]
+            ]
+          )
+          m_cond
+        ) <>
+        [ Pretty.hsep
+          [ Pretty.text "yield"
+          , prettyExpr f (unvar (\() -> n') g) yield
+          ]
+        ]
+    Name n -> Pretty.text $ Text.unpack n
+    Var n -> g n
+    Record values ->
+      Pretty.braces . fold . List.intersperse (Pretty.comma <> Pretty.space) $
+      foldr
+        (\(field, v) ->
+           (:) (Pretty.text (Text.unpack field) <> Pretty.char ':' <> Pretty.space <> prettyExpr f g v)
+        )
+        []
+        values
+    Project value field ->
+      prettyExpr f g value <> Pretty.dot <> Pretty.text (Text.unpack field)
+    Extend field value record ->
+      Pretty.braces $
+      Pretty.hsep
+      [ Pretty.text (Text.unpack field) <> Pretty.char ':'
+      , prettyExpr f g value
+      , Pretty.char '|'
+      , prettyExpr f g record
+      ]
+    Update field (n, Bound.fromScope -> func) record ->
+      let
+        n' = Pretty.text (Text.unpack n)
+      in
+      Pretty.braces $
+      Pretty.hsep
+      [ Pretty.text $ Text.unpack field
+      , Pretty.char '%'
+      , Pretty.char '\\' <> n'
+      , Pretty.text "->"
+      , prettyExpr f (unvar (\() -> n') g) func
+      , Pretty.char '|'
+      , prettyExpr f g record
+      ]
+    Int n -> Pretty.text $ show n
+    Bool b -> Pretty.text $ show b
+    Many values ->
+      Pretty.brackets . fold . List.intersperse (Pretty.comma <> Pretty.space) $
+      foldr ((:) . prettyExpr f g) [] values
+    Some value ->
+      Pretty.hsep [Pretty.text "Some", prettyExpr f g value]
+    None -> Pretty.text "None"
+    FoldOptional z (n, Bound.fromScope -> func) value ->
+      let
+        n' = Pretty.text (Text.unpack n)
+      in
+      Pretty.hsep
+      [ Pretty.text "foldOptional"
+      , prettyExpr f g z
+      , Pretty.parens $
+        Pretty.hsep
+        [ Pretty.char '\\' <> n'
+        , Pretty.text "->"
+        , prettyExpr f (unvar (\() -> n') g) func
+        , prettyExpr f g value
+        ]
+      ]
+    AND l r ->
+      Pretty.hsep [prettyExpr f g l, Pretty.text "&&", prettyExpr f g r]
+    OR l r ->
+      Pretty.hsep [prettyExpr f g l, Pretty.text "||", prettyExpr f g r]
+    EQ l r ->
+      Pretty.hsep [prettyExpr f g l, Pretty.text "==", prettyExpr f g r]
+    NOT value ->
+      Pretty.hsep [Pretty.text "not", prettyExpr f g value]
+    Embed{} -> Pretty.text "<query>"
