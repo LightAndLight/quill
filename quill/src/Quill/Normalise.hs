@@ -2,7 +2,7 @@
 {-# language ViewPatterns #-}
 module Quill.Normalise
   ( Value(..), toExpr, fromExpr
-  , normaliseExpr, normaliseQuery
+  , normaliseExpr
   )
 where
 
@@ -10,7 +10,7 @@ import qualified Bound
 import Bound.Scope (hoistScope)
 import Data.Text as Text
 import Data.Vector as Vector
-import Quill.Syntax (Expr, Query)
+import Quill.Syntax (Expr)
 import qualified Quill.Syntax as Syntax
 
 data Value
@@ -22,7 +22,7 @@ data Value
   | None
   deriving Eq
 
-toExpr :: Value -> Expr a b
+toExpr :: Value -> Expr a
 toExpr value =
   case value of
     Record fields -> Syntax.Record $ (fmap.fmap) toExpr fields
@@ -32,7 +32,7 @@ toExpr value =
     None -> Syntax.None
     Some a -> Syntax.Some (toExpr a)
 
-fromExpr :: Expr a b -> Maybe Value
+fromExpr :: Expr a -> Maybe Value
 fromExpr value =
   case value of
     Syntax.Record fields -> Record <$> (traverse.traverse) fromExpr fields
@@ -43,37 +43,31 @@ fromExpr value =
     Syntax.Some a -> Some <$> fromExpr a
     _ -> Nothing
 
-structuralEq :: Expr a b -> Expr a b -> Maybe Bool
+structuralEq :: Expr a -> Expr a -> Maybe Bool
 structuralEq l r = (==) <$> fromExpr l <*> fromExpr r
 
--- kleisli composition
+-- kleisli composition in Query monad
 composeQuery ::
-  Bound.Scope () (Query a) b ->
-  Bound.Scope () (Query a) b ->
-  Bound.Scope () (Query a) b
+  Bound.Scope () Expr b ->
+  Bound.Scope () Expr b ->
+  Bound.Scope () Expr b
 composeQuery f (Bound.fromScope -> g) =
   Bound.toScope $ Syntax.Bind g "__temp" (Bound.F <$> f)
 
-normaliseQuery :: Query a b -> Query a b
-normaliseQuery query =
-  case query of
-    Syntax.SelectFrom{} -> query
-    Syntax.QName{} -> query
-    Syntax.QVar{} -> query
+normaliseExpr :: Expr a -> Expr a
+normaliseExpr e =
+  case e of
+    Syntax.SelectFrom{} -> e
     Syntax.InsertInto value table -> Syntax.InsertInto (normaliseExpr value) table
     Syntax.InsertIntoReturning value table -> Syntax.InsertIntoReturning (normaliseExpr value) table
     Syntax.Bind m n body ->
-      case normaliseQuery m of
+      case normaliseExpr m of
         Syntax.Return value -> Bound.instantiate1 (Syntax.Return value) body
         Syntax.Bind m' n' body' ->
-          normaliseQuery $
+          normaliseExpr $
           Syntax.Bind m' n' (composeQuery body body')
-        m' -> Syntax.Bind m' n $ hoistScope normaliseQuery body
+        m' -> Syntax.Bind m' n $ hoistScope normaliseExpr body
     Syntax.Return value -> Syntax.Return $ normaliseExpr value
-
-normaliseExpr :: Expr a b -> Expr a b
-normaliseExpr e =
-  case e of
     Syntax.For n value m_cond yield ->
       let
         value' = normaliseExpr value
@@ -206,4 +200,3 @@ normaliseExpr e =
       case normaliseExpr value of
         Syntax.Bool b -> Syntax.Bool $ not b
         value' -> Syntax.NOT value'
-    Syntax.Embed query -> Syntax.Embed $ normaliseQuery query

@@ -17,7 +17,7 @@ import GHC.Exts (fromString)
 import Quill.Check (QueryEnv(..), TypeError(..), checkExpr)
 import Quill.Normalise (normaliseExpr)
 import Quill.Parser (Parser, parseString, decls, expr, query)
-import Quill.Syntax (Decl(..), Expr(..), Query(..), TableItem(..), Type(..))
+import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
 import Test.HUnit.Lang (FailureReason(ExpectedButGot), HUnitFailure(HUnitFailure))
@@ -47,29 +47,27 @@ data ConvertTest
   = ConvertTest
   { from :: Type
   , to :: Type
-  , inputTerm :: Expr Void Void
-  , outputTerm :: Expr Void Void
+  , inputTerm :: Expr Void
+  , outputTerm :: Expr Void
   }
 
 convertTest :: ConvertTest -> IO ()
 convertTest ct = do
   output <- either (error . show) pure $ checkExpr env (inputTerm ct) (to ct)
   let
-    expected :: Expr Text Text
-    expected = bimap absurd absurd $ outputTerm ct
+    expected :: Expr Text
+    expected = absurd <$> outputTerm ct
 
-    actual :: Expr Text Text
-    actual = bimap absurd absurd output
+    actual :: Expr Text
+    actual = absurd <$> output
   -- print $ Syntax.ShowExpr actual
   normaliseExpr actual `shouldBe` normaliseExpr expected
   where
    env =
      QueryEnv
      { _qeLanguage = Syntax.SQL2003
-     , _qeQueryNames = absurd
-     , _qeLocalQueries = absurd
-     , _qeVarNames = absurd
-     , _qeLocalVars = absurd
+     , _qeNames = absurd
+     , _qeLocals = absurd
      , _qeGlobalVars = mempty
      , _qeGlobalQueries = mempty
      , _qeTypes = mempty
@@ -79,7 +77,7 @@ convertTest ct = do
 data CheckTest
   = CheckTest
   { check_type :: Type
-  , check_term :: Expr Void Void
+  , check_term :: Expr Void
   }
 
 checkTest :: CheckTest -> IO ()
@@ -90,10 +88,8 @@ checkTest ct = do
    env =
      QueryEnv
      { _qeLanguage = Syntax.SQL2003
-     , _qeQueryNames = absurd
-     , _qeLocalQueries = absurd
-     , _qeVarNames = absurd
-     , _qeLocalVars = absurd
+     , _qeNames = absurd
+     , _qeLocals = absurd
      , _qeGlobalVars = mempty
      , _qeGlobalQueries = mempty
      , _qeTypes = mempty
@@ -103,7 +99,7 @@ checkTest ct = do
 data Doesn'tCheckTest
   = Doesn'tCheckTest
   { doesn'tCheck_type :: Type
-  , doesn'tCheck_term :: Expr Void Void
+  , doesn'tCheck_term :: Expr Void
   , doesn'tCheck_error :: TypeError
   }
 
@@ -116,10 +112,8 @@ doesn'tCheckTest ct = do
    env =
      QueryEnv
      { _qeLanguage = Syntax.SQL2003
-     , _qeQueryNames = absurd
-     , _qeLocalQueries = absurd
-     , _qeVarNames = absurd
-     , _qeLocalVars = absurd
+     , _qeNames = absurd
+     , _qeLocals = absurd
      , _qeGlobalVars = mempty
      , _qeGlobalQueries = mempty
      , _qeTypes = mempty
@@ -150,12 +144,12 @@ main =
         parseTest $
         ParseTest
         { parse_input =
-          [ "type TwoInts = { fst: Int, snd: Int };"
+          [ "type AUD = { dollars: Int, cents: Int };"
           ]
-        , parse_show = unlines . fmap (show . Syntax.prettyDecl)
+        , parse_show = show
         , parse_parser = decls
         , parse_output =
-          [ Type "TwoInts" $ TRecord [("fst", TInt), ("snd", TInt)]
+          [ Type "AUD" $ TRecord [("dollars", TInt), ("cents", TInt)]
           ]
         }
       it "2" $
@@ -168,7 +162,7 @@ main =
           , "  cost : AUD"
           , "}"
           ]
-        , parse_show = unlines . fmap (show . Syntax.prettyDecl)
+        , parse_show = show
         , parse_parser = decls
         , parse_output =
           [ Table "Expenses"
@@ -184,96 +178,6 @@ main =
         parseTest $
         ParseTest
         { parse_input =
-          [ "expense.id == id"
-          ]
-        , parse_show =
-          show .
-          Syntax.prettyExpr
-            (unvar (\_ -> "expenses") absurd)
-            (unvar (\() -> "expense") (unvar (\_ -> "id") absurd))
-        , parse_parser =
-          expr
-            (\n ->
-               if n == "expenses"
-               then Just $ Bound.B ()
-               else Nothing
-            )
-            (\n ->
-               if n == "id"
-               then Just . Bound.F $ Bound.B 0
-               else if n == "expense"
-               then Just $ Bound.B ()
-               else Nothing
-            )
-        , parse_output =
-            Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.B 0)
-        }
-      it "4" $
-        parseTest $
-        ParseTest
-        { parse_input =
-          [ "for expense in expenses"
-          , "yield expense"
-          ]
-        , parse_show =
-            -- show $ Syntax.prettyExpr (unvar (\_ -> "expenses") absurd) (unvar (\_ -> "id") absurd) tm
-            show . Syntax.prettyExpr (unvar (fromString . show) absurd) (unvar (fromString . show) absurd)
-        , parse_parser =
-          expr
-            (\n -> if n == "expenses" then Just $ Bound.B () else Nothing)
-            (\n -> if n == "id" then Just $ Bound.B 0 else Nothing)
-        , parse_output =
-            For
-              "expense"
-              (Embed $ QVar $ Bound.B ())
-              Nothing
-              (Bound.toScope . Var $ Bound.B ())
-        }
-      it "5" $
-        parseTest $
-        ParseTest
-        { parse_input =
-          [ "for expense in expenses"
-          , "where expense.id == id"
-          , "yield expense"
-          ]
-        , parse_show = show . Syntax.prettyExpr (unvar (\_ -> "expenses") absurd) (unvar (\_ -> "id") absurd)
-        , parse_parser =
-          expr
-            (\n -> if n == "expenses" then Just $ Bound.B () else Nothing)
-            (\n -> if n == "id" then Just $ Bound.B 0 else Nothing)
-        , parse_output =
-            For
-              "expense"
-              (Embed $ QVar $ Bound.B ())
-              (Just . Bound.toScope $ Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.B 0))
-              (Bound.toScope . Var $ Bound.B ())
-        }
-      it "6" $
-        parseTest $
-        ParseTest
-        { parse_input =
-          [ "expenses <- select from Expenses;"
-          , "return ("
-          , "  for expense in expenses"
-          , "  where expense.id == id"
-          , "  yield expense"
-          , ")"
-          ]
-        , parse_show = show . Syntax.prettyQuery (unvar (\_ -> "id") absurd) absurd
-        , parse_parser = query (\n -> if n == "id" then Just $ Bound.B 0 else Nothing) (const Nothing)
-        , parse_output =
-            Bind (SelectFrom "Expenses") "expenses" . Bound.toScope . Return $
-            For
-              "expense"
-              (Embed $ QVar $ Bound.B ())
-              (Just . Bound.toScope $ Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.B 0))
-              (Bound.toScope . Var $ Bound.B ())
-        }
-      it "7" $
-        parseTest $
-        ParseTest
-        { parse_input =
           [ "query selectExpensesById(id: Int) -> Query (Many { id : Int, name : Text, cost : AUD }) {"
           , "  expenses <- select from Expenses;"
           , "  return ("
@@ -283,18 +187,21 @@ main =
           , "  )"
           , "}"
           ]
-        , parse_show = unlines . fmap (show . Syntax.prettyDecl)
+        , parse_show = show
         , parse_parser = decls
         , parse_output =
           [ Query
               "selectExpensesById"
               [("id", TInt)]
               (TQuery $ TMany $ TRecord [("id", TInt), ("name", TName "Text"), ("cost", TName "AUD")])
-              (Bind (SelectFrom "Expenses") "expenses" . Bound.toScope . Return $
+              (Bound.toScope . Bind (SelectFrom "Expenses") "expenses" .
+               Bound.toScope . Return $
                For
                  "expense"
-                 (Embed $ QVar $ Bound.B ())
-                 (Just . Bound.toScope $ Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.B 0))
+                 (Var $ Bound.B ())
+                 (Just . Bound.toScope $
+                  Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.F $ Bound.B 0)
+                 )
                  (Bound.toScope . Var $ Bound.B ())
               )
           ]
