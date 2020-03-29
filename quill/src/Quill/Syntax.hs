@@ -5,6 +5,7 @@
 {-# language ViewPatterns #-}
 module Quill.Syntax
   ( Type(..)
+  , getTypeAnn
   , prettyType
   , Language(..)
   , Expr(..)
@@ -22,11 +23,15 @@ import Prelude hiding (Ordering(..))
 
 import Bound ((>>>=), Scope(..))
 import qualified Bound
+import Bound.Scope (bitraverseScope)
 import Bound.Var (unvar)
 import Control.Monad (ap)
-import Data.Deriving (deriveEq1, deriveShow1)
+import Data.Bifunctor (Bifunctor(..))
+import Data.Bifunctor.TH (deriveBifunctor)
+import Data.Deriving (deriveEq1, deriveShow1, deriveEq2, deriveShow2)
 import Data.Foldable (fold)
-import Data.Functor.Classes (eq1, showsPrec1)
+import Data.Functor.Classes (Eq1(..), Show1(..), Eq2(..), Show2(..), eq1, showsPrec1, showsUnaryWith)
+import Data.Functor.Identity (Identity(..))
 import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -50,12 +55,50 @@ data Type t
   | TOptional t (Type t)
   | TName t Text
   | TInt t
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Functor)
 
-data TableItem
-  = Field Text Type
+getTypeAnn :: Type t -> t
+getTypeAnn t =
+  case t of
+    TRecord a _ -> a
+    TUnit a -> a
+    TBool a -> a
+    TMany a _ -> a
+    TQuery a _ -> a
+    TOptional a _ -> a
+    TName a _ -> a
+    TInt a -> a
+
+data TableItem t
+  = Field Text (Type t)
   | Constraint Text (Vector Text)
   deriving (Eq, Show)
+
+newtype Scope2 x f a b = Scope2 { unscope2 :: Scope x (f a) b }
+  deriving (Functor, Foldable, Traversable)
+instance (Eq x, Eq2 f) => Eq2 (Scope2 x f) where
+  liftEq2 f g (Scope2 (Scope a)) (Scope2 (Scope b)) =
+    liftEq2 f (liftEq (liftEq2 f g)) a b
+instance (Show x, Show2 f) => Show2 (Scope2 x f) where
+  liftShowsPrec2 s sl s' sl' p (Scope2 scope) =
+    showsUnaryWith
+      (liftShowsPrec2
+         s
+         sl
+         (liftShowsPrec (liftShowsPrec2 s sl s' sl') (liftShowList2 s sl s' sl'))
+         (liftShowList (liftShowsPrec2 s sl s' sl') (liftShowList2 s sl s' sl'))
+      )
+      "Scope2"
+      p
+      (unscope scope)
+instance (Eq x, Eq2 f, Eq a) => Eq1 (Scope2 x f a) where; liftEq = liftEq2 (==)
+instance (Show x, Show2 f, Show a) => Show1 (Scope2 x f a) where
+  liftShowsPrec = liftShowsPrec2 showsPrec showList
+instance Bifunctor f => Bifunctor (Scope2 x f) where
+  bimap f g =
+    Scope2 . Scope .
+    bimap f (fmap (bimap f g)) .
+    unscope . unscope2
 
 data Expr t a
   = Name Text
@@ -64,19 +107,19 @@ data Expr t a
   | SelectFrom Text
   | InsertInto (Expr t a) Text
   | InsertIntoReturning (Expr t a) Text
-  | Bind (Expr t a) Text (Scope () (Expr t) a)
+  | Bind (Expr t a) Text (Scope2 () Expr t a)
   | Return (Expr t a)
 
   | For
       Text
       (Expr t a) -- values
-      (Maybe (Scope () (Expr t) a)) -- predicate
-      (Scope () (Expr t) a) -- yield
+      (Maybe (Scope2 () Expr t a)) -- predicate
+      (Scope2 () Expr t a) -- yield
 
   | Record (Vector (Text, Expr t a))
   | Project t (Expr t a) Text
   | Extend Text (Expr t a) (Expr t a)
-  | Update Text (Text, Scope () (Expr t) a) (Expr t a)
+  | Update Text (Text, Scope2 () Expr t a) (Expr t a)
   | HasField (Expr t a) Text
 
   | Int Int
@@ -88,17 +131,21 @@ data Expr t a
 
   | Some (Expr t a)
   | None
-  | FoldOptional (Expr t a) (Text, Scope () (Expr t) a) (Expr t a)
+  | FoldOptional (Expr t a) (Text, Scope2 () Expr t a) (Expr t a)
 
   | AND (Expr t a) (Expr t a)
   | OR (Expr t a) (Expr t a)
   | EQ (Expr t a) (Expr t a)
   | NOT (Expr t a)
   deriving (Functor, Foldable, Traversable)
-deriveEq1 ''Expr
-deriveShow1 ''Expr
+deriveBifunctor ''Expr
+deriveEq2 ''Expr
+deriveShow2 ''Expr
+instance Eq a => Eq1 (Expr a) where; liftEq = liftEq2 (==)
+instance Show a => Show1 (Expr a) where; liftShowsPrec = liftShowsPrec2 showsPrec showList
 instance (Eq t, Eq a) => Eq (Expr t a) where; (==) = eq1
 instance (Show t, Show a) => Show (Expr t a) where; showsPrec = showsPrec1
+{-
 instance Applicative (Expr t) where; pure = return; (<*>) = ap
 instance Monad (Expr t) where
   return = Var
@@ -176,18 +223,18 @@ getAnn e =
     NOT _ -> Nothing
 
 
-data Decl t
-  = Table Text (Vector TableItem)
-  | Type Text Type
+data Decl t t'
+  = Table Text (Vector (TableItem t'))
+  | Type Text (Type t')
   | Query
       Text
-      (Vector (Text, Type))
-      Type
+      (Vector (Text, Type t'))
+      (Type t')
       (Scope Int (Expr t) Void)
   | Function
       Text
-      (Vector (Text, Type))
-      Type
+      (Vector (Text, Type t'))
+      (Type t')
       (Scope Int (Expr t) Void)
   deriving (Eq, Show)
 
@@ -336,10 +383,10 @@ prettyExpr f e =
     NOT value ->
       Pretty.hsep [Pretty.text "not", prettyExpr f value]
 
-prettyType :: Type -> Doc
+prettyType :: Type t -> Doc
 prettyType ty =
   case ty of
-    TRecord fields ->
+    TRecord _ fields ->
       Pretty.braces . (Pretty.space <>) . (<> Pretty.space) . fold .
       List.intersperse (Pretty.comma <> Pretty.space) $
       foldr
@@ -353,7 +400,7 @@ prettyType ty =
         )
         []
         fields
-    TMany a ->
+    TMany _ a ->
       Pretty.text "Many" <> Pretty.space <>
       (case a of
          TQuery{} -> Pretty.parens
@@ -361,7 +408,7 @@ prettyType ty =
          TOptional{} -> Pretty.parens
          _ -> id
       ) (prettyType a)
-    TQuery a ->
+    TQuery _ a ->
       Pretty.text "Query" <> Pretty.space <>
       (case a of
          TQuery{} -> Pretty.parens
@@ -369,7 +416,7 @@ prettyType ty =
          TOptional{} -> Pretty.parens
          _ -> id
       ) (prettyType a)
-    TOptional a ->
+    TOptional _ a ->
       Pretty.text "Optional" <> Pretty.space <>
       (case a of
          TQuery{} -> Pretty.parens
@@ -377,12 +424,12 @@ prettyType ty =
          TOptional{} -> Pretty.parens
          _ -> id
       ) (prettyType a)
-    TName n -> Pretty.text $ Text.unpack n
-    TInt -> Pretty.text "Int"
-    TUnit -> Pretty.text "Unit"
-    TBool -> Pretty.text "Bool"
+    TName _ n -> Pretty.text $ Text.unpack n
+    TInt _ -> Pretty.text "Int"
+    TUnit _ -> Pretty.text "Unit"
+    TBool _ -> Pretty.text "Bool"
 
-prettyTableItem :: TableItem -> Doc
+prettyTableItem :: TableItem t -> Doc
 prettyTableItem item =
   case item of
     Field field ty -> Pretty.hsep [Pretty.text (Text.unpack field), Pretty.char ':', prettyType ty]
@@ -390,7 +437,7 @@ prettyTableItem item =
       Pretty.text (Text.unpack name) <>
       Pretty.parens (fold . List.intersperse Pretty.comma $ foldr ((:) . Pretty.text . Text.unpack) [] args)
 
-prettyDecl :: Decl t -> Doc
+prettyDecl :: Decl t t' -> Doc
 prettyDecl d =
   case d of
     Table table items ->
@@ -455,3 +502,4 @@ prettyDecl d =
           (Bound.fromScope body)
       , Pretty.char '}'
       ]
+-}
