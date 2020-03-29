@@ -488,8 +488,12 @@ prettyExpr f g e =
         [ Pretty.char '\\' <> n'
         , Pretty.text "->"
         , prettyExpr f (unvar (\() -> n') g) func
-        , prettyExpr f g value
         ]
+      , (case value of
+           FoldOptional{} -> Pretty.parens
+           Some{} -> Pretty.parens
+           _ -> id
+        ) (prettyExpr f g value)
       ]
     AND l r ->
       Pretty.hsep [prettyExpr f g l, Pretty.text "&&", prettyExpr f g r]

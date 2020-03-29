@@ -56,7 +56,7 @@ data TypeError
   | Can'tInferExpr Syntax.ShowExpr
   | LanguageMismatch Language Language
   | DuplicateRecordFields
-  deriving Show
+  deriving (Eq, Show)
 
 data TableInfo
   = TableInfo
@@ -166,8 +166,10 @@ mapOptional f =
     Syntax.FoldOptional
       Syntax.None
       ( "__temp"
-      , Bound.toScope . Syntax.Some $
-        Bound.fromScope f >>= unvar (\() -> Syntax.Var $ Bound.B ()) (Syntax.Var . Bound.F . Bound.F)
+      , Bound.F <$>
+        compose
+          (Bound.toScope $ Syntax.Some $ Syntax.Var $ Bound.B ())
+          f
       )
       (Syntax.Var $ Bound.B ())
 
@@ -362,18 +364,45 @@ checkExpr env expr ty = do
       case ty of
         Syntax.TOptional{} -> pure expr
         _ -> throwError $ ExpectedOptional ty
-    Syntax.HasField record field -> do
-      (record', recordTy) <- inferExpr env record
-      case recordTy of
-        Syntax.TRecord{} ->
-          case ty of
-            Syntax.TBool -> pure $ Syntax.HasField record' field
-            _ -> throwError $ TypeMismatch ty Syntax.TBool
-        _ -> throwError $ ExpectedRecord recordTy
+    Syntax.Record fields ->
+      case ty of
+        Syntax.TRecord fieldTys -> do
+          (expr', ty') <- inferRecord env (foldr (uncurry Map.insert) mempty fieldTys) fields
+          f <- convertExpr env ty ty'
+          pure $ Bound.instantiate1 expr' f
+        _ -> throwError $ ExpectedRecord ty
     _ -> do
       (expr', ty') <- inferExpr env expr
       f <- convertExpr env ty ty'
       pure $ Bound.instantiate1 expr' f
+
+inferRecord ::
+  MonadError TypeError m =>
+  QueryEnv a b ->
+  Map Text Type ->
+  Vector (Text, Expr a b) ->
+  m (Expr a b, Type)
+inferRecord env hints fields =
+  let
+    names = foldr (Set.insert . fst) mempty fields
+  in
+    if Set.size names == Vector.length fields
+    then do
+      results <-
+        traverse
+          (\(f, v) ->
+             case Map.lookup f hints of
+               Just vTy -> do
+                 v' <- checkExpr env v vTy
+                 pure (f, (v', vTy))
+               Nothing -> (,) f <$> inferExpr env v
+          )
+          fields
+      pure
+        ( Syntax.Record $ (\(n, (val, _)) -> (n, val)) <$> results
+        , Syntax.TRecord $ (\(n, (_, ty)) -> (n, ty)) <$> results
+        )
+    else throwError DuplicateRecordFields
 
 inferExpr ::
   MonadError TypeError m =>
@@ -387,7 +416,7 @@ inferExpr env expr =
       pure (Syntax.Embed a', aTy)
     Syntax.Some a -> do
       (a', aTy) <- inferExpr env a
-      pure (a', Syntax.TOptional aTy)
+      pure (Syntax.Some a', Syntax.TOptional aTy)
     Syntax.None -> throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.FoldOptional z (n, f) value -> do
       (value', valueTy) <- inferExpr env value
@@ -497,18 +526,7 @@ inferExpr env expr =
                   fields
                 )
         _ -> throwError $ ExpectedRecord recordTy
-    Syntax.Record fields ->
-      let
-        names = foldr (Set.insert . fst) mempty fields
-      in
-        if Set.size names == Vector.length fields
-        then do
-          results <- (traverse.traverse) (inferExpr env) fields
-          pure
-            ( Syntax.Record $ (\(n, (val, _)) -> (n, val)) <$> results
-            , Syntax.TRecord $ (\(n, (_, ty)) -> (n, ty)) <$> results
-            )
-        else throwError DuplicateRecordFields
+    Syntax.Record fields -> inferRecord env mempty fields
     Syntax.Project val field -> do
       (val', valTy) <- inferExpr env val
       case valTy of
@@ -517,8 +535,11 @@ inferExpr env expr =
             Nothing -> throwError $ MissingField valTy field
             Just (_, fieldTy) -> pure (Syntax.Project val' field, fieldTy)
         _ -> throwError $ ExpectedRecord valTy
-    Syntax.HasField{} ->
-      throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
+    Syntax.HasField record field -> do
+      (record', recordTy) <- inferExpr env record
+      case recordTy of
+        Syntax.TRecord{} -> pure (Syntax.HasField record' field, Syntax.TBool)
+        _ -> throwError $ ExpectedRecord recordTy
 
     Syntax.Var n -> pure (Syntax.Var n, _qeLocalVars env n)
 
