@@ -8,6 +8,7 @@ module Quill.Syntax
   , prettyType
   , Language(..)
   , Expr(..)
+  , getAnn
   , prettyExpr
   , recordPunned
   , Decl(..)
@@ -40,15 +41,15 @@ data Language
   | Postgresql
   deriving (Eq, Show)
 
-data Type
-  = TRecord (Vector (Text, Type))
-  | TUnit
-  | TBool
-  | TMany Type
-  | TQuery Type
-  | TOptional Type
-  | TName Text
-  | TInt
+data Type t
+  = TRecord t (Vector (Text, Type t))
+  | TUnit t
+  | TBool t
+  | TMany t (Type t)
+  | TQuery t (Type t)
+  | TOptional t (Type t)
+  | TName t Text
+  | TInt t
   deriving (Eq, Ord, Show)
 
 data TableItem
@@ -73,7 +74,7 @@ data Expr t a
       (Scope () (Expr t) a) -- yield
 
   | Record (Vector (Text, Expr t a))
-  | Project (Expr t a) Text
+  | Project t (Expr t a) Text
   | Extend Text (Expr t a) (Expr t a)
   | Update Text (Text, Scope () (Expr t) a) (Expr t a)
   | HasField (Expr t a) Text
@@ -115,7 +116,7 @@ instance Monad (Expr t) where
       For n value m_cond yield -> For n (value >>= f) ((>>>= f) <$> m_cond) (yield >>>= f)
 
       Record values -> Record ((fmap.fmap) (>>= f) values)
-      Project value field -> Project (value >>= f) field
+      Project ann value field -> Project ann (value >>= f) field
       HasField value field -> HasField (value >>= f) field
       Extend field value rest -> Extend field (value >>= f) (rest >>= f)
       Update field (n, func) rest -> Update field (n, func >>>= f) (rest >>= f)
@@ -138,6 +139,42 @@ instance Monad (Expr t) where
 
 recordPunned :: (a -> Text) -> Vector a -> Expr t a
 recordPunned f fields = Record $ (\field -> (f field, Var field)) <$> fields
+
+getAnn :: Expr t a -> Maybe t
+getAnn e =
+  case e of
+    Name{} -> Nothing
+    Var{} -> Nothing
+    SelectFrom _ -> Nothing
+    InsertInto _ _ -> Nothing
+    InsertIntoReturning _ _ -> Nothing
+    Bind _ _ _ -> Nothing
+    Return _ -> Nothing
+
+    For _ _ _ _ -> Nothing
+
+    Record _ -> Nothing
+    Project a _ _ -> Just a
+    Extend _ _ _ -> Nothing
+    Update _ _ _ -> Nothing
+    HasField _ _ -> Nothing
+
+    Int _ -> Nothing
+
+    Bool _ -> Nothing
+    IfThenElse _ _ _ -> Nothing
+
+    Many _ -> Nothing
+
+    Some _ -> Nothing
+    None -> Nothing
+    FoldOptional _ _ _ -> Nothing
+
+    AND _ _ -> Nothing
+    OR _ _ -> Nothing
+    EQ _ _ -> Nothing
+    NOT _ -> Nothing
+
 
 data Decl t
   = Table Text (Vector TableItem)
@@ -230,7 +267,7 @@ prettyExpr f e =
         []
         values
     HasField record field -> prettyExpr f record <> Pretty.char '?' <> Pretty.text (Text.unpack field)
-    Project value field ->
+    Project _ value field ->
       prettyExpr f value <> Pretty.dot <> Pretty.text (Text.unpack field)
     Extend field value record ->
       Pretty.braces $

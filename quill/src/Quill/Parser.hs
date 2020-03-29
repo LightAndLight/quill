@@ -56,7 +56,7 @@ variable = ident varStyle
 constructor :: (Monad m, TokenParsing m) => m Text
 constructor = ident ctorStyle
 
-atomExpr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr t a)
+atomExpr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr () a)
 atomExpr var = hasField
   where
     hasField =
@@ -72,7 +72,7 @@ atomExpr var = hasField
       (\e m_field ->
          case m_field of
            Nothing -> e
-           Just field -> Project e field
+           Just field -> Project () e field
       ) <$>
       atom <*>
       optional (symbolic '.' *> variable)
@@ -124,7 +124,7 @@ atomExpr var = hasField
       fmap (Record . Vector.fromList) $
       ((,) <$> variable <* symbolic ':' <*> expr var) `sepBy` comma
 
-expr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr t a)
+expr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr () a)
 expr var =
   compound <|>
   and_
@@ -174,7 +174,7 @@ expr var =
       yield <- atomExpr var'
       pure $ For n value (Bound.toScope <$> m_cond) (Bound.toScope yield)
 
-query :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr t a)
+query :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr () a)
 query var =
   bind <|>
   atom
@@ -235,7 +235,7 @@ type_ =
       fmap (TRecord . Vector.fromList) $
       ((,) <$> variable <* symbolic ':' <*> type_) `sepBy` comma
 
-decl :: (Monad m, TokenParsing m) => m (Decl t)
+decl :: (Monad m, TokenParsing m) => m (Decl ())
 decl =
   table <|>
   typeDecl <|>
@@ -280,7 +280,7 @@ decl =
           (\n' -> fmap Bound.B . Vector.findIndex ((n' ==) . fst) $ args)
       pure $ Function name args retTy body
 
-decls :: (Monad m, TokenParsing m) => m [Decl t]
+decls :: (Monad m, TokenParsing m) => m [Decl ()]
 decls = some decl <* eof
 
 parseString :: Parser a -> String -> Either String a

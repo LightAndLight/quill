@@ -106,13 +106,13 @@ normaliseExpr e =
     Syntax.Name{} -> e
     Syntax.Var{} -> e
     Syntax.Record values -> Syntax.Record $ (fmap.fmap) normaliseExpr values
-    Syntax.Project value field ->
+    Syntax.Project ann value field ->
       case normaliseExpr value of
         Syntax.Record values ->
           case Vector.find ((field ==) . fst) values of
             Just (_, result) -> result
             _ -> undefined
-        value' -> Syntax.Project value' field
+        value' -> Syntax.Project ann value' field
     Syntax.HasField value field ->
       case normaliseExpr value of
         Syntax.Record values ->
