@@ -16,29 +16,29 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void)
-import Quill.Check (QueryEnv, resolveType)
+import Quill.Check (Info(..), Origin(..), QueryEnv, TypeInfo(..), resolveType)
 import Quill.Syntax (Expr, TableItem, Type)
 import qualified Quill.Syntax as Syntax
 
-columnType :: QueryEnv Void -> Type -> ByteString
+columnType :: QueryEnv Void -> Type TypeInfo -> ByteString
 columnType env ty =
   case ty of
-    Syntax.TRecord{} -> error "todo: records as column types"
-    Syntax.TUnit -> "blob NOT NULL"
-    Syntax.TBool -> "boolean NOT NULL"
-    Syntax.TMany{} -> error "todo: many as column types???"
-    Syntax.TOptional{} -> error "todo: optional as column types???"
-    Syntax.TQuery{} -> error "todo: query as column types???"
-    Syntax.TName n ->
+    Syntax.TRecord _ _ -> error "todo: records as column types"
+    Syntax.TUnit _ -> "blob NOT NULL"
+    Syntax.TBool _ -> "boolean NOT NULL"
+    Syntax.TMany _ _ -> error "todo: many as column types???"
+    Syntax.TOptional _ _ -> error "todo: optional as column types???"
+    Syntax.TQuery _ _ -> error "todo: query as column types???"
+    Syntax.TName _ n ->
       case resolveType env n of
         Left{} -> undefined
         Right ty' -> columnType env ty'
-    Syntax.TInt -> "int NOT NULL"
+    Syntax.TInt _ -> "int NOT NULL"
 
 createTable ::
   QueryEnv Void ->
   Text ->
-  Vector TableItem ->
+  Vector (TableItem TypeInfo) ->
   Lazy.ByteString
 createTable env tableName items =
   Builder.toLazyByteString $
@@ -77,11 +77,11 @@ createTable env tableName items =
     (colNames, colInfos, constraints) = gatherConstraints items
 
     gatherConstraints ::
-      Vector TableItem ->
+      Vector (TableItem TypeInfo) ->
       ( [Text]
       , Map
           Text -- column name
-          ( Type -- column type
+          ( Type TypeInfo -- column type
           , [Text] -- unary constraints
           )
       , [(Text, Vector Text)] -- higher arity constraints
@@ -117,7 +117,7 @@ parens a = "(" <> a <> ")"
 
 expr ::
   (a -> Builder.Builder) ->
-  Expr Type a ->
+  Expr Info a ->
   Builder.Builder
 expr f e =
   case e of
@@ -174,17 +174,41 @@ expr f e =
       error "todo: SQL.expr name" n
     Syntax.HasField value field ->
       error "todo: SQL.expr hasfield" value field
-    Syntax.Project ann value field ->
-      (case value of
-         Syntax.Project{} -> id
-         Syntax.Var{} -> id
-         Syntax.Name{} -> id
-         Syntax.Int{} -> id
-         Syntax.Bool{} -> id
-         _ -> parens
-      ) (expr f value) <>
-      "." <>
-      Builder.byteString (encodeUtf8 field)
+    Syntax.Project _ value field ->
+      case Syntax.getAnn value of
+        Nothing -> error "SQL.expr project - no ann for value"
+        Just valueInfo ->
+          let
+            valueType = _infoType valueInfo
+            m_valueOrigin = _typeInfoOrigin $ Syntax.getTypeAnn valueType
+          in
+            case m_valueOrigin of
+              Nothing -> error "SQL.expr project - unknown origin for value"
+              Just valueOrigin ->
+                case valueOrigin of
+                  Row ->
+                    (case value of
+                       Syntax.Project{} -> id
+                       Syntax.Var{} -> id
+                       Syntax.Name{} -> id
+                       Syntax.Int{} -> id
+                       Syntax.Bool{} -> id
+                       _ -> parens
+                    ) (expr f value) <>
+                    "." <>
+                    Builder.byteString (encodeUtf8 field)
+                  Column ->
+                    (case value of
+                      Syntax.Project{} -> id
+                      Syntax.Var{} -> id
+                      Syntax.Name{} -> id
+                      Syntax.Int{} -> id
+                      Syntax.Bool{} -> id
+                      _ -> parens
+                    ) (expr f value) <>
+                    "_" <>
+                    Builder.byteString (encodeUtf8 field)
+                  _ -> error $ "SQL.expr project - invalid origin " <> show valueOrigin
     Syntax.Var n -> f n
     Syntax.Record fields ->
       fold . intersperse ", " $

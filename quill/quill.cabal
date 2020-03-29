@@ -24,6 +24,7 @@ library
                      , Quill.Syntax
   build-depends:       base ^>=4.12.0.0
                      , ansi-wl-pprint
+                     , bifunctors
                      , bound
                      , bytestring
                      , containers

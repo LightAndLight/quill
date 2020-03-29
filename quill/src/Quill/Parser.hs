@@ -208,7 +208,7 @@ query var =
           query (\n' -> if n' == n then Just (Bound.B ()) else Bound.F <$> var n')
       pure $ Bind value n rest
 
-type_ :: (Monad m, TokenParsing m) => m Type
+type_ :: (Monad m, TokenParsing m) => m (Type ())
 type_ =
   app
   where
@@ -216,13 +216,13 @@ type_ =
       (do
         f <- constructor
         case f of
-          "Many" -> TMany <$> atom
-          "Query" -> TQuery <$> atom
-          "Optional" -> TOptional <$> atom
-          "Bool" -> pure TBool
-          "Unit" -> pure TUnit
-          "Int" -> pure TInt
-          _ -> pure $ TName f
+          "Many" -> TMany () <$> atom
+          "Query" -> TQuery () <$> atom
+          "Optional" -> TOptional () <$> atom
+          "Bool" -> pure $ TBool ()
+          "Unit" -> pure $ TUnit ()
+          "Int" -> pure $ TInt ()
+          _ -> pure $ TName () f
       ) <|>
       atom
 
@@ -232,10 +232,10 @@ type_ =
 
     record =
       braces $
-      fmap (TRecord . Vector.fromList) $
+      fmap (TRecord () . Vector.fromList) $
       ((,) <$> variable <* symbolic ':' <*> type_) `sepBy` comma
 
-decl :: (Monad m, TokenParsing m) => m (Decl ())
+decl :: (Monad m, TokenParsing m) => m (Decl () ())
 decl =
   table <|>
   typeDecl <|>
@@ -280,7 +280,7 @@ decl =
           (\n' -> fmap Bound.B . Vector.findIndex ((n' ==) . fst) $ args)
       pure $ Function name args retTy body
 
-decls :: (Monad m, TokenParsing m) => m [Decl ()]
+decls :: (Monad m, TokenParsing m) => m [Decl () ()]
 decls = some decl <* eof
 
 parseString :: Parser a -> String -> Either String a

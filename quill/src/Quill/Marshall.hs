@@ -12,13 +12,13 @@ import Data.Foldable (foldrM)
 import Data.Proxy (Proxy(..))
 import qualified Data.Vector as Vector
 import Data.Void (Void)
-import Quill.Check (QueryEnv, TypeError, checkExpr)
+import Quill.Check (QueryEnv, TypeError, checkExpr, mkTypeInfo)
 import Quill.Normalise (Value(..), toExpr, fromExpr)
 import Quill.Syntax (Type)
 import qualified Quill.Syntax as Syntax
 
 class Marshall a where
-  typeOf :: Proxy a -> Type
+  typeOf :: Proxy a -> Type ()
   toValue :: a -> Value
   fromValueUnchecked :: Value -> Maybe a
 
@@ -29,13 +29,15 @@ fromValue ::
   Value ->
   Either (TypeError t) a
 fromValue env value = do
-  value' <- checkExpr env (toExpr value) $ typeOf (Proxy :: Proxy a)
+  let ty = typeOf (Proxy :: Proxy a)
+  ty' <- mkTypeInfo env Nothing ty
+  value' <- checkExpr env (toExpr value) ty'
   case fromValueUnchecked =<< fromExpr value' of
     Just a -> pure a
     Nothing -> error "impossible"
 
 instance Marshall () where
-  typeOf _ = Syntax.TRecord mempty
+  typeOf _ = Syntax.TRecord () mempty
   toValue () = Record mempty
   fromValueUnchecked value =
     case value of
@@ -43,7 +45,7 @@ instance Marshall () where
       _ -> Nothing
 
 instance Marshall a => Marshall [a] where
-  typeOf _ = Syntax.TMany $ typeOf (Proxy :: Proxy a)
+  typeOf _ = Syntax.TMany () $ typeOf (Proxy :: Proxy a)
   toValue = Many . Vector.map toValue . Vector.fromList
   fromValueUnchecked value =
     case value of
@@ -52,7 +54,7 @@ instance Marshall a => Marshall [a] where
 
 instance (Marshall a, Marshall b) => Marshall (a, b) where
   typeOf _ =
-    Syntax.TRecord
+    Syntax.TRecord ()
     [ ("fst", typeOf (Proxy :: Proxy a))
     , ("snd", typeOf (Proxy :: Proxy b))
     ]
@@ -66,7 +68,7 @@ instance (Marshall a, Marshall b) => Marshall (a, b) where
       _ -> Nothing
 
 instance Marshall Bool where
-  typeOf _ = Syntax.TBool
+  typeOf _ = Syntax.TBool ()
   toValue = Bool
   fromValueUnchecked value =
     case value of
@@ -74,7 +76,7 @@ instance Marshall Bool where
       _ -> Nothing
 
 instance Marshall Int where
-  typeOf _ = Syntax.TInt
+  typeOf _ = Syntax.TInt ()
   toValue = Int
   fromValueUnchecked value =
     case value of
