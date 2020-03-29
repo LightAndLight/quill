@@ -19,6 +19,7 @@ library
   exposed-modules:     Quill.Check
                      , Quill.Marshall
                      , Quill.Normalise
+                     , Quill.Parser
                      , Quill.SQL
                      , Quill.Syntax
   build-depends:       base ^>=4.12.0.0
@@ -29,8 +30,10 @@ library
                      , deriving-compat
                      , lens
                      , mtl
+                     , parsers
                      , text
                      , transformers
+                     , trifecta
                      , vector
   hs-source-dirs:      src
   ghc-options:         -Wall -Werror
@@ -48,6 +51,10 @@ test-suite quill-tests
   build-depends:       base ^>=4.12.0.0
                      , quill
                      , bound
+                     , call-stack
+                     , deepseq
                      , hspec
+                     , HUnit
+                     , text
   hs-source-dirs:      test
   default-language:    Haskell2010
