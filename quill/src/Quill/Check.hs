@@ -9,10 +9,7 @@ module Quill.Check
   , QueryEnv(..)
   , resolveType
   , convertExpr
-  , convertQuery
   , TypeError(..)
-  , checkQuery
-  , inferQuery
   , checkExpr
   , inferExpr
   , DeclEnv(..)
@@ -30,7 +27,6 @@ import Control.Lens.Fold ((^?))
 import Control.Monad (unless, when)
 import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
 import Control.Monad.State (MonadState, evalStateT, gets, modify)
-import Data.Bifunctor (bimap)
 import Data.Foldable (traverse_)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -40,7 +36,7 @@ import Data.Text (Text)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
-import Quill.Syntax (Decl, Expr, Language, Query, TableItem, Type)
+import Quill.Syntax (Decl, Expr, Language, TableItem, Type)
 import qualified Quill.Syntax as Syntax
 
 data TypeError
@@ -53,7 +49,7 @@ data TypeError
   | TypeNotInScope Text
   | TableNotInScope Text
   | VariableNotInScope Text
-  | Can'tInferExpr (Expr Text Text)
+  | Can'tInferExpr (Expr Text)
   | LanguageMismatch Language Language
   | DuplicateRecordFields
   deriving (Eq, Show)
@@ -64,13 +60,11 @@ data TableInfo
   , _tiWriteType :: Type
   }
 
-data QueryEnv a b
+data QueryEnv a
   = QueryEnv
   { _qeLanguage :: Language
-  , _qeQueryNames :: a -> Text
-  , _qeLocalQueries :: a -> Type
-  , _qeVarNames :: b -> Text
-  , _qeLocalVars :: b -> Type
+  , _qeNames :: a -> Text
+  , _qeLocals :: a -> Type
   , _qeGlobalVars :: Map Text Type
   , _qeGlobalQueries :: Map Text Type
   , _qeTypes :: Map Text Type
@@ -79,7 +73,7 @@ data QueryEnv a b
 
 resolveType ::
   MonadError TypeError m =>
-  QueryEnv a b ->
+  QueryEnv a ->
   Text ->
   m Type
 resolveType env n =
@@ -95,7 +89,7 @@ insertAt ::
   Int ->
   Vector (Text, Type) ->
   (Text, Type) ->
-  (Bound.Scope () (Expr a) b, Vector (Text, Type))
+  (Bound.Scope () Expr a, Vector (Text, Type))
 insertAt ix fields entry@(field, _) =
   ( Bound.toScope $
     Syntax.IfThenElse
@@ -113,12 +107,12 @@ insertAt ix fields entry@(field, _) =
     (prefix, suffix) = Vector.splitAt ix fields
 
 convertFields ::
-  forall m a b.
+  forall m a.
   MonadError TypeError m =>
-  QueryEnv a b ->
+  QueryEnv a ->
   Vector (Text, Type) ->
   Vector (Text, Type) ->
-  m (Maybe (Bound.Scope () (Expr a) b))
+  m (Maybe (Bound.Scope () Expr a))
 convertFields env e a = do
   (res, _) <- go 0 a e a
   pure res
@@ -128,7 +122,7 @@ convertFields env e a = do
       Vector (Text, Type) ->
       Vector (Text, Type) ->
       Vector (Text, Type) ->
-      m (Maybe (Bound.Scope () (Expr a) b), Vector (Text, Type))
+      m (Maybe (Bound.Scope () Expr a), Vector (Text, Type))
     go !ix full expected actual =
       case expected ^? _Cons of
         Nothing ->
@@ -160,7 +154,7 @@ convertFields env e a = do
 identity :: Monad f => Bound.Scope () f b
 identity = Bound.toScope (pure $ Bound.B ())
 
-mapOptional :: Scope () (Expr a) b -> Scope () (Expr a) b
+mapOptional :: Scope () Expr a -> Scope () Expr a
 mapOptional f =
   Bound.toScope $
     Syntax.FoldOptional
@@ -173,7 +167,7 @@ mapOptional f =
       )
       (Syntax.Var $ Bound.B ())
 
-mapMany :: Scope () (Expr a) b -> Scope () (Expr a) b
+mapMany :: Scope () Expr a -> Scope () Expr a
 mapMany f =
   Bound.toScope $
     Syntax.For
@@ -184,10 +178,10 @@ mapMany f =
 
 convertExpr ::
   MonadError TypeError m =>
-  QueryEnv a b ->
+  QueryEnv a ->
   Type ->
   Type ->
-  m (Bound.Scope () (Expr a) b)
+  m (Bound.Scope () Expr a)
 convertExpr env expected actual =
   case expected of
     Syntax.TName n -> do
@@ -218,13 +212,7 @@ convertExpr env expected actual =
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TQuery{} -> do
       case actual of
-        Syntax.TQuery{} -> do
-          f <- convertQuery env expected actual
-          pure . Bound.toScope . Syntax.Embed $
-            Syntax.bisubstQuery
-              (Syntax.Var . Bound.F)
-              (unvar (\() -> Syntax.Return $ Syntax.Var $ Bound.B ()) Syntax.QVar)
-              (Bound.fromScope f)
+        Syntax.TQuery{} -> mapQuery <$> convertExpr env expected actual
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TMany a -> do
       case actual of
@@ -235,7 +223,7 @@ convertExpr env expected actual =
         Syntax.TOptional a' -> mapOptional <$> convertExpr env a a'
         _ -> throwError $ TypeMismatch expected actual
 
-language :: MonadError TypeError m => QueryEnv a b -> Language -> m ()
+language :: MonadError TypeError m => QueryEnv a -> Language -> m ()
 language env l =
   unless (l == _qeLanguage env) . throwError $
   LanguageMismatch l (_qeLanguage env)
@@ -261,99 +249,18 @@ checkType ty =
     Syntax.TName{} -> pure ()
     Syntax.TInt -> pure ()
 
-mapQuery :: Bound.Scope () (Expr a) b -> Bound.Scope () (Query b) a
+mapQuery :: Bound.Scope () Expr a -> Bound.Scope () Expr a
 mapQuery f =
-  Bound.toScope $
-  Syntax.Bind (Syntax.QVar $ Bound.B ()) "__temp" . Bound.toScope . Syntax.Return $
-  Syntax.bisubstExpr
-    (Syntax.QVar . Bound.F . Bound.F)
-    (unvar (\() -> Syntax.Embed $ Syntax.QVar $ Bound.B ()) Syntax.Var)
-    (Bound.fromScope f)
-
-convertQuery ::
-  MonadError TypeError m =>
-  QueryEnv a b ->
-  Type ->
-  Type ->
-  m (Scope () (Query b) a)
-convertQuery env expected actual = do
-  case expected of
-    Syntax.TQuery a -> do
-      case actual of
-        Syntax.TQuery a' -> do
-          f <- convertExpr env a a'
-          pure $ mapQuery f
-        _ -> undefined
-    _ -> undefined
-
-checkQuery ::
-  MonadError TypeError m =>
-  QueryEnv a b ->
-  Query b a ->
-  Type ->
-  m (Query b a)
-checkQuery env query ty = do
-  checkType ty
-  (query', ty') <- inferQuery env query
-  f <- convertQuery env ty ty'
-  pure $ Bound.instantiate1 query' f
-
-inferQuery ::
-  MonadError TypeError m =>
-  QueryEnv a b ->
-  Query b a ->
-  m (Query b a, Type)
-inferQuery env query =
-  case query of
-    Syntax.QVar a -> pure (Syntax.QVar a, _qeLocalQueries env a)
-    Syntax.QName a -> do
-      ty <- maybe (throwError $ VariableNotInScope a) pure $ Map.lookup a (_qeGlobalQueries env)
-      pure (Syntax.QName a, ty)
-    Syntax.SelectFrom table -> do
-      info <-
-        maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
-      pure (Syntax.SelectFrom table, Syntax.TQuery (_tiReadType info))
-    Syntax.InsertInto value table -> do
-      info <-
-        maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
-      value' <- checkExpr env value (_tiWriteType info)
-      pure (Syntax.InsertInto value' table, Syntax.TQuery Syntax.TUnit)
-    Syntax.InsertIntoReturning value table -> do
-      language env Syntax.Postgresql
-      info <-
-        maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
-      value' <- checkExpr env value (_tiWriteType info)
-      pure (Syntax.InsertIntoReturning value' table, Syntax.TQuery (_tiReadType info))
-    Syntax.Bind value n rest -> do
-      (value', valueTy) <- inferQuery env value
-      case valueTy of
-        Syntax.TQuery ty -> do
-          (rest', restTy) <-
-            inferQuery
-              (env
-               { _qeQueryNames = unvar (\() -> n) (_qeQueryNames env)
-               , _qeLocalQueries = unvar (\() -> ty) (_qeLocalQueries env)
-               }
-              )
-              (Bound.fromScope rest)
-          case restTy of
-            Syntax.TQuery ty' ->
-              pure (Syntax.Bind value' n $ Bound.toScope rest', Syntax.TQuery ty')
-            _ -> throwError $ ExpectedQuery restTy
-        _ -> throwError $ ExpectedQuery valueTy
-    Syntax.Return value -> do
-      (value', valueTy) <- inferExpr env value
-      pure (Syntax.Return value', Syntax.TQuery valueTy)
+  Bound.toScope . Syntax.Bind (Syntax.Var $ Bound.B ()) "__temp" .
+  Bound.toScope . Syntax.Return $
+  unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f
 
 checkExpr ::
   MonadError TypeError m =>
-  QueryEnv a b ->
-  Expr a b ->
+  QueryEnv a ->
+  Expr a ->
   Type ->
-  m (Expr a b)
+  m (Expr a)
 checkExpr env expr ty = do
   case expr of
     Syntax.Many values ->
@@ -378,10 +285,10 @@ checkExpr env expr ty = do
 
 inferRecord ::
   MonadError TypeError m =>
-  QueryEnv a b ->
+  QueryEnv a ->
   Map Text Type ->
-  Vector (Text, Expr a b) ->
-  m (Expr a b, Type)
+  Vector (Text, Expr a) ->
+  m (Expr a, Type)
 inferRecord env hints fields =
   let
     names = foldr (Set.insert . fst) mempty fields
@@ -406,18 +313,53 @@ inferRecord env hints fields =
 
 inferExpr ::
   MonadError TypeError m =>
-  QueryEnv a b ->
-  Expr a b ->
-  m (Expr a b, Type)
+  QueryEnv a ->
+  Expr a ->
+  m (Expr a, Type)
 inferExpr env expr =
   case expr of
-    Syntax.Embed a -> do
-      (a', aTy) <- inferQuery env a
-      pure (Syntax.Embed a', aTy)
+    Syntax.SelectFrom table -> do
+      info <-
+        maybe (throwError $ TableNotInScope table) pure $
+        Map.lookup table (_qeTables env)
+      pure (Syntax.SelectFrom table, Syntax.TQuery (_tiReadType info))
+    Syntax.InsertInto value table -> do
+      info <-
+        maybe (throwError $ TableNotInScope table) pure $
+        Map.lookup table (_qeTables env)
+      value' <- checkExpr env value (_tiWriteType info)
+      pure (Syntax.InsertInto value' table, Syntax.TQuery Syntax.TUnit)
+    Syntax.InsertIntoReturning value table -> do
+      language env Syntax.Postgresql
+      info <-
+        maybe (throwError $ TableNotInScope table) pure $
+        Map.lookup table (_qeTables env)
+      value' <- checkExpr env value (_tiWriteType info)
+      pure (Syntax.InsertIntoReturning value' table, Syntax.TQuery (_tiReadType info))
+    Syntax.Bind value n rest -> do
+      (value', valueTy) <- inferExpr env value
+      case valueTy of
+        Syntax.TQuery ty -> do
+          (rest', restTy) <-
+            inferExpr
+              (env
+               { _qeNames = unvar (\() -> n) (_qeNames env)
+               , _qeLocals = unvar (\() -> ty) (_qeLocals env)
+               }
+              )
+              (Bound.fromScope rest)
+          case restTy of
+            Syntax.TQuery ty' ->
+              pure (Syntax.Bind value' n $ Bound.toScope rest', Syntax.TQuery ty')
+            _ -> throwError $ ExpectedQuery restTy
+        _ -> throwError $ ExpectedQuery valueTy
+    Syntax.Return value -> do
+      (value', valueTy) <- inferExpr env value
+      pure (Syntax.Return value', Syntax.TQuery valueTy)
     Syntax.Some a -> do
       (a', aTy) <- inferExpr env a
       pure (Syntax.Some a', Syntax.TOptional aTy)
-    Syntax.None -> throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
+    Syntax.None -> throwError $ Can'tInferExpr (_qeNames env <$> expr)
     Syntax.FoldOptional z (n, f) value -> do
       (value', valueTy) <- inferExpr env value
       case valueTy of
@@ -426,12 +368,12 @@ inferExpr env expr =
           let
             env' =
               env
-              { _qeVarNames =
-                  unvar (\() -> n) (_qeVarNames env)
-              , _qeLocalVars =
+              { _qeNames =
+                  unvar (\() -> n) (_qeNames env)
+              , _qeLocals =
                   unvar
                     (\() -> a)
-                    (_qeLocalVars env)
+                    (_qeLocals env)
               }
           f' <- checkExpr env' (Bound.fromScope f) zTy
           pure (Syntax.FoldOptional z' (n, Bound.toScope f') value', zTy)
@@ -445,7 +387,7 @@ inferExpr env expr =
               (Vector.tail values)
           pure (Syntax.Many $ Vector.cons head' tail', Syntax.TMany headTy)
       | otherwise ->
-          throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
+          throwError $ Can'tInferExpr (_qeNames env <$> expr)
     Syntax.Int{} -> pure (expr, Syntax.TInt)
     Syntax.Bool{} -> pure (expr, Syntax.TBool)
     Syntax.IfThenElse a b c -> do
@@ -460,12 +402,12 @@ inferExpr env expr =
           let
             env' =
               env
-              { _qeVarNames =
-                  unvar (\() -> n) (_qeVarNames env)
-              , _qeLocalVars =
+              { _qeNames =
+                  unvar (\() -> n) (_qeNames env)
+              , _qeLocals =
                   unvar
                     (\() -> itemTy)
-                    (_qeLocalVars env)
+                    (_qeLocals env)
               }
           m_cond' <-
             case m_cond of
@@ -511,12 +453,12 @@ inferExpr env expr =
               let
                 env' =
                   env
-                  { _qeVarNames =
-                      unvar (\() -> n) (_qeVarNames env)
-                  , _qeLocalVars =
+                  { _qeNames =
+                      unvar (\() -> n) (_qeNames env)
+                  , _qeLocals =
                       unvar
                         (\() -> fieldTy)
-                        (_qeLocalVars env)
+                        (_qeLocals env)
                   }
               (fun', fieldTy') <- inferExpr env' (Bound.fromScope fun)
               pure
@@ -541,7 +483,7 @@ inferExpr env expr =
         Syntax.TRecord{} -> pure (Syntax.HasField record' field, Syntax.TBool)
         _ -> throwError $ ExpectedRecord recordTy
 
-    Syntax.Var n -> pure (Syntax.Var n, _qeLocalVars env n)
+    Syntax.Var n -> pure (Syntax.Var n, _qeLocals env n)
 
     Syntax.AND a b -> do
       a' <- checkExpr env a Syntax.TBool
@@ -670,18 +612,16 @@ checkDecl env decl =
             queryEnv =
               QueryEnv
               { _qeLanguage = _deLanguage env
-              , _qeVarNames = unvar (fst . (args Vector.!)) absurd
-              , _qeQueryNames = absurd
-              , _qeLocalVars = unvar (argTys Vector.!) absurd
-              , _qeLocalQueries = absurd
+              , _qeNames = unvar (fst . (args Vector.!)) absurd
+              , _qeLocals = unvar (argTys Vector.!) absurd
               , _qeGlobalVars = _deGlobalVars env
               , _qeGlobalQueries = _deGlobalQueries env
               , _qeTypes = _deTypes env
               , _qeTables = _deTables env
               }
 
-          body' <- mapError TypeError $ checkQuery queryEnv body retTy
-          pure $ Syntax.Query name args retTy body'
+          body' <- mapError TypeError $ checkExpr queryEnv (Bound.fromScope body) retTy
+          pure $ Syntax.Query name args retTy (Bound.toScope body')
     Syntax.Function name args retTy body ->
       case Map.lookup name (_deGlobalVars env <> _deGlobalQueries env) of
         Just{} -> throwError $ VariableAlreadyDefined name
@@ -691,10 +631,8 @@ checkDecl env decl =
             queryEnv =
               QueryEnv
               { _qeLanguage = _deLanguage env
-              , _qeVarNames = unvar (fst . (args Vector.!)) absurd
-              , _qeQueryNames = absurd
-              , _qeLocalVars = unvar (argTys Vector.!) absurd
-              , _qeLocalQueries = absurd
+              , _qeNames = unvar (fst . (args Vector.!)) absurd
+              , _qeLocals = unvar (argTys Vector.!) absurd
               , _qeGlobalVars = _deGlobalVars env
               , _qeGlobalQueries = _deGlobalQueries env
               , _qeTypes = _deTypes env

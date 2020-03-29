@@ -17,7 +17,7 @@ import qualified Bound
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Vector as Vector
-import Quill.Syntax (Decl(..), Expr(..), Query(..), TableItem(..), Type(..))
+import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
 import Text.Trifecta hiding (parseString)
 import qualified Text.Trifecta as Trifecta
 import qualified Text.Parser.Token.Highlight as Highlight
@@ -56,8 +56,8 @@ variable = ident varStyle
 constructor :: (Monad m, TokenParsing m) => m Text
 constructor = ident ctorStyle
 
-atomExpr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> (Text -> Maybe b) -> m (Expr a b)
-atomExpr qvar var = hasField
+atomExpr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr a)
+atomExpr var = hasField
   where
     hasField =
       (\e m_field ->
@@ -79,7 +79,6 @@ atomExpr qvar var = hasField
 
     atom =
       (\v -> maybe (Name v) Var $ var v) <$> variable <|>
-      Embed <$> atomQuery var qvar <|>
       Int . read <$> some digit <|>
       (\c ->
          case c of
@@ -93,18 +92,18 @@ atomExpr qvar var = hasField
       extend <|>
       update <|>
       list <|>
-      parens (expr qvar var)
+      parens (expr var)
 
     list =
       brackets $
       fmap (Many . Vector.fromList) $
-      expr qvar var `sepBy` comma
+      expr var `sepBy` comma
 
     extend =
       braces $
       Extend <$> variable <* symbolic ':' <*>
-      expr qvar var <* symbolic '|' <*>
-      expr qvar var
+      expr var <* symbolic '|' <*>
+      expr var
 
     update =
       braces $ do
@@ -114,19 +113,19 @@ atomExpr qvar var = hasField
           _ <- symbolic '\\'
           n <- variable
           _ <- symbol "->"
-          value <- expr qvar $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
+          value <- expr $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
           pure (n, Bound.toScope value)
         _ <- symbolic '|'
-        value <- expr qvar var
+        value <- expr var
         pure $ Update field (n, func) value
 
     record =
       braces $
       fmap (Record . Vector.fromList) $
-      ((,) <$> variable <* symbolic ':' <*> expr qvar var) `sepBy` comma
+      ((,) <$> variable <* symbolic ':' <*> expr var) `sepBy` comma
 
-expr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> (Text -> Maybe b) -> m (Expr a b)
-expr qvar var =
+expr :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr a)
+expr var =
   compound <|>
   and_
   where
@@ -141,55 +140,51 @@ expr qvar var =
     eq = EQ <$> app <* symbol "==" <*> app
 
     app = do
-      f <- atomExpr qvar var
+      f <- atomExpr var
       case f of
-        Name "Some" -> Some <$> atomExpr qvar var
+        Name "Some" -> Some <$> atomExpr var
         Name "foldOptional" -> do
-          z <- atomExpr qvar var
+          z <- atomExpr var
           (n, func) <-
             parens $ do
               _ <- symbolic '\\'
               n <- variable
               _ <- symbol "->"
-              value <- expr qvar $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
+              value <- expr $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
               pure (n, Bound.toScope value)
-          value <- atomExpr qvar var
+          value <- atomExpr var
           pure $ FoldOptional z (n, func) value
-        Name "not" -> NOT <$> atomExpr qvar var
+        Name "not" -> NOT <$> atomExpr var
         _ -> pure f
 
     ifThenElse =
       IfThenElse <$ reserved "if" <*>
-      expr qvar var <* reserved "then" <*>
-      expr qvar var <* reserved "else" <*>
-      expr qvar var
+      expr var <* reserved "then" <*>
+      expr var <* reserved "else" <*>
+      expr var
 
     for = do
       reserved "for"
       n <- variable
       reserved "in"
-      value <- atomExpr qvar var
+      value <- atomExpr var
       let var' = \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
-      m_cond <- optional (reserved "where" *> expr qvar var')
+      m_cond <- optional (reserved "where" *> expr var')
       reserved "yield"
-      yield <- atomExpr qvar var'
+      yield <- atomExpr var'
       pure $ For n value (Bound.toScope <$> m_cond) (Bound.toScope yield)
 
-atomQuery :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> (Text -> Maybe b) -> m (Query a b)
-atomQuery var qvar =
-  (\v -> maybe (QName v) QVar $ qvar v) <$> variable <|>
-  parens (query var qvar)
-
-query :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> (Text -> Maybe b) -> m (Query a b)
-query var qvar =
+query :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr a)
+query var =
   bind <|>
   atom
   where
     atom =
-      atomQuery var qvar <|>
+      (\v -> maybe (Name v) Var $ var v) <$> variable <|>
       selectFrom <|>
       insertInto <|>
-      return_
+      return_ <|>
+      parens (query var)
     selectFrom =
       SelectFrom <$ reserved "select" <* reserved "from" <*>
       constructor
@@ -199,10 +194,10 @@ query var qvar =
             Nothing -> InsertInto value table
             Just{} -> InsertIntoReturning value table
        ) <$ reserved "insert" <*>
-       expr qvar var <* reserved "into" <*>
+       expr var <* reserved "into" <*>
        variable <*>
        optional (reserved "returning")
-    return_ = Return <$ reserved "return" <*> atomExpr qvar var
+    return_ = Return <$ reserved "return" <*> atomExpr var
     bind = do
       n <- variable
       _ <- symbol "<-"
@@ -210,7 +205,7 @@ query var qvar =
       rest <- do
         _ <- symbolic ';'
         Bound.toScope <$>
-          query var (\n' -> if n' == n then Just (Bound.B ()) else Bound.F <$> qvar n')
+          query (\n' -> if n' == n then Just (Bound.B ()) else Bound.F <$> var n')
       pure $ Bind value n rest
 
 type_ :: (Monad m, TokenParsing m) => m Type
@@ -270,8 +265,7 @@ decl =
         braces $
         query
           (\n' -> fmap Bound.B . Vector.findIndex ((n' ==) . fst) $ args)
-          (\_ -> Nothing)
-      pure $ Query name args retTy body
+      pure $ Query name args retTy (Bound.toScope body)
     fnDecl = do
       reserved "fn"
       name <- variable
@@ -283,7 +277,6 @@ decl =
       body <-
         braces . fmap Bound.toScope $
         expr
-          (\_ -> Nothing)
           (\n' -> fmap Bound.B . Vector.findIndex ((n' ==) . fst) $ args)
       pure $ Function name args retTy body
 

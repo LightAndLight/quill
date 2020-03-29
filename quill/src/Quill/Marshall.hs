@@ -25,7 +25,7 @@ class Marshall a where
 fromValue ::
   forall a.
   Marshall a =>
-  QueryEnv Void Void ->
+  QueryEnv Void ->
   Value ->
   Either TypeError a
 fromValue env value = do
