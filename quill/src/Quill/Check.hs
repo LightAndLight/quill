@@ -71,6 +71,21 @@ data QueryEnv a
   , _qeTables :: Map Text TableInfo
   }
 
+data Origin
+  = Rows
+  | Row
+  | Column
+
+data TypeInfo
+  = TypeInfo
+  { _typeInfoOrigin :: Maybe Origin
+  }
+
+data Info
+  = Info
+  { _infoType :: Type TypeInfo
+  }
+
 resolveType ::
   MonadError (TypeError t) m =>
   QueryEnv a ->
@@ -85,12 +100,20 @@ resolveType env n =
 compose :: Monad f => Scope () f a -> Scope () f a -> Scope () f a
 compose f (Bound.fromScope -> g) = Bound.toScope $ unvar (\() -> g) (pure . Bound.F) =<< Bound.fromScope f
 
+projectOrigin :: Info -> Maybe Origin
+projectOrigin valInfo = do
+  valOrigin <- _infoOrigin valInfo
+  case valOrigin of
+    Rows -> error "origin: projecting from a 'Rows'"
+    Row -> pure Column
+    Column -> pure Column
+
 insertAt ::
   Int ->
   Vector (Text, Type) ->
   (Text, Type) ->
-  (Bound.Scope () (Expr t) a, Vector (Text, Type))
-insertAt ix fields entry@(field, _) =
+  (Bound.Scope () (Expr Info) a, Vector (Text, Type))
+insertAt ix fields entry@(field, ty) =
   ( Bound.toScope $
     Syntax.IfThenElse
       (Syntax.HasField (Syntax.Var $ Bound.B ()) field)
@@ -103,7 +126,15 @@ insertAt ix fields entry@(field, _) =
       Syntax.Record $
       (keep <$> prefix) <>
       Vector.cons (field, Syntax.None) (keep <$> suffix)
-    keep (f, _) = (f, Syntax.Project (Syntax.Var (Bound.B ())) f)
+    keep (f, v) =
+      let
+        info =
+          Info
+          { _infoType = v
+          , _infoOrigin = _
+          }
+      in
+        (f, Syntax.Project info (Syntax.Var (Bound.B ())) f)
     (prefix, suffix) = Vector.splitAt ix fields
 
 convertFields ::
@@ -112,7 +143,7 @@ convertFields ::
   QueryEnv a ->
   Vector (Text, Type) ->
   Vector (Text, Type) ->
-  m (Maybe (Bound.Scope () (Expr t) a))
+  m (Maybe (Bound.Scope () (Expr Info) a))
 convertFields env e a = do
   (res, _) <- go 0 a e a
   pure res
@@ -122,7 +153,7 @@ convertFields env e a = do
       Vector (Text, Type) ->
       Vector (Text, Type) ->
       Vector (Text, Type) ->
-      m (Maybe (Bound.Scope () (Expr t) a), Vector (Text, Type))
+      m (Maybe (Bound.Scope () (Expr Info) a), Vector (Text, Type))
     go !ix full expected actual =
       case expected ^? _Cons of
         Nothing ->
@@ -181,7 +212,7 @@ convertExpr ::
   QueryEnv a ->
   Type ->
   Type ->
-  m (Bound.Scope () (Expr t) a)
+  m (Bound.Scope () (Expr Info) a)
 convertExpr env expected actual =
   case expected of
     Syntax.TName n -> do
@@ -260,7 +291,7 @@ checkExpr ::
   QueryEnv a ->
   Expr t a ->
   Type ->
-  m (Expr t a)
+  m (Expr Info a)
 checkExpr env expr ty = do
   case expr of
     Syntax.Many values ->
@@ -269,7 +300,7 @@ checkExpr env expr ty = do
         _ -> throwError $ ExpectedMany ty
     Syntax.None ->
       case ty of
-        Syntax.TOptional{} -> pure expr
+        Syntax.TOptional{} -> pure Syntax.None
         _ -> throwError $ ExpectedOptional ty
     Syntax.Record fields ->
       case ty of
@@ -288,7 +319,7 @@ inferRecord ::
   QueryEnv a ->
   Map Text Type ->
   Vector (Text, Expr t a) ->
-  m (Expr t a, Type)
+  m (Expr Info a, Type)
 inferRecord env hints fields =
   let
     names = foldr (Set.insert . fst) mempty fields
@@ -315,7 +346,7 @@ inferExpr ::
   MonadError (TypeError t) m =>
   QueryEnv a ->
   Expr t a ->
-  m (Expr t a, Type)
+  m (Expr Info a, Type)
 inferExpr env expr =
   case expr of
     Syntax.SelectFrom table -> do
@@ -388,8 +419,8 @@ inferExpr env expr =
           pure (Syntax.Many $ Vector.cons head' tail', Syntax.TMany headTy)
       | otherwise ->
           throwError $ Can'tInferExpr (_qeNames env <$> expr)
-    Syntax.Int{} -> pure (expr, Syntax.TInt)
-    Syntax.Bool{} -> pure (expr, Syntax.TBool)
+    Syntax.Int n -> pure (Syntax.Int n, Syntax.TInt)
+    Syntax.Bool b -> pure (Syntax.Bool b, Syntax.TBool)
     Syntax.IfThenElse a b c -> do
       a' <- checkExpr env a Syntax.TBool
       (b', bTy) <- inferExpr env b
@@ -469,13 +500,20 @@ inferExpr env expr =
                 )
         _ -> throwError $ ExpectedRecord recordTy
     Syntax.Record fields -> inferRecord env mempty fields
-    Syntax.Project val field -> do
+    Syntax.Project _ val field -> do
       (val', valTy) <- inferExpr env val
       case valTy of
         Syntax.TRecord fields ->
           case Vector.find ((field ==) . fst) fields of
             Nothing -> throwError $ MissingField valTy field
-            Just (_, fieldTy) -> pure (Syntax.Project val' field, fieldTy)
+            Just (_, fieldTy) -> do
+              let
+                info =
+                  Info
+                  { _infoType = fieldTy
+                  , _infoOrigin = projectOrigin =<< Syntax.getAnn val'
+                  }
+              pure (Syntax.Project info val' field, fieldTy)
         _ -> throwError $ ExpectedRecord valTy
     Syntax.HasField record field -> do
       (record', recordTy) <- inferExpr env record
@@ -585,7 +623,7 @@ checkDecl ::
   MonadError (DeclError t) m =>
   DeclEnv ->
   Decl t ->
-  m (Decl t)
+  m (Decl Info)
 checkDecl env decl =
   case decl of
     Syntax.Table name items -> do
@@ -595,10 +633,10 @@ checkDecl env decl =
       evalStateT
         (traverse_ (checkTableItem env) items)
         (TableItemState False mempty)
-      pure decl
+      pure $ Syntax.Table name items
     Syntax.Type name ty ->
       case Map.lookup name (_deTypes env) of
-        Nothing -> decl <$ mapError TypeError (checkType ty)
+        Nothing -> Syntax.Type name ty <$ mapError TypeError (checkType ty)
         Just{} -> throwError $ TypeAlreadyDefined name
     Syntax.Query name args retTy body ->
       case Map.lookup name (_deGlobalVars env <> _deGlobalQueries env) of

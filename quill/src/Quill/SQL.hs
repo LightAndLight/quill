@@ -117,7 +117,7 @@ parens a = "(" <> a <> ")"
 
 expr ::
   (a -> Builder.Builder) ->
-  Expr t a ->
+  Expr Type a ->
   Builder.Builder
 expr f e =
   case e of
@@ -174,7 +174,7 @@ expr f e =
       error "todo: SQL.expr name" n
     Syntax.HasField value field ->
       error "todo: SQL.expr hasfield" value field
-    Syntax.Project value field ->
+    Syntax.Project ann value field ->
       (case value of
          Syntax.Project{} -> id
          Syntax.Var{} -> id
