@@ -22,7 +22,7 @@ data Value
   | None
   deriving Eq
 
-toExpr :: Value -> Expr a
+toExpr :: Value -> Expr t a
 toExpr value =
   case value of
     Record fields -> Syntax.Record $ (fmap.fmap) toExpr fields
@@ -32,7 +32,7 @@ toExpr value =
     None -> Syntax.None
     Some a -> Syntax.Some (toExpr a)
 
-fromExpr :: Expr a -> Maybe Value
+fromExpr :: Expr t a -> Maybe Value
 fromExpr value =
   case value of
     Syntax.Record fields -> Record <$> (traverse.traverse) fromExpr fields
@@ -43,18 +43,18 @@ fromExpr value =
     Syntax.Some a -> Some <$> fromExpr a
     _ -> Nothing
 
-structuralEq :: Expr a -> Expr a -> Maybe Bool
+structuralEq :: Expr t a -> Expr t a -> Maybe Bool
 structuralEq l r = (==) <$> fromExpr l <*> fromExpr r
 
 -- kleisli composition in Query monad
 composeQuery ::
-  Bound.Scope () Expr b ->
-  Bound.Scope () Expr b ->
-  Bound.Scope () Expr b
+  Bound.Scope () (Expr t) b ->
+  Bound.Scope () (Expr t) b ->
+  Bound.Scope () (Expr t) b
 composeQuery f (Bound.fromScope -> g) =
   Bound.toScope $ Syntax.Bind g "__temp" (Bound.F <$> f)
 
-normaliseExpr :: Expr a -> Expr a
+normaliseExpr :: Expr t a -> Expr t a
 normaliseExpr e =
   case e of
     Syntax.SelectFrom{} -> e

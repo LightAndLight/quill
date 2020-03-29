@@ -39,7 +39,7 @@ import Data.Void (absurd)
 import Quill.Syntax (Decl, Expr, Language, TableItem, Type)
 import qualified Quill.Syntax as Syntax
 
-data TypeError
+data TypeError t
   = ExpectedRecord Type
   | ExpectedMany Type
   | ExpectedOptional Type
@@ -49,7 +49,7 @@ data TypeError
   | TypeNotInScope Text
   | TableNotInScope Text
   | VariableNotInScope Text
-  | Can'tInferExpr (Expr Text)
+  | Can'tInferExpr (Expr t Text)
   | LanguageMismatch Language Language
   | DuplicateRecordFields
   deriving (Eq, Show)
@@ -72,7 +72,7 @@ data QueryEnv a
   }
 
 resolveType ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   QueryEnv a ->
   Text ->
   m Type
@@ -89,7 +89,7 @@ insertAt ::
   Int ->
   Vector (Text, Type) ->
   (Text, Type) ->
-  (Bound.Scope () Expr a, Vector (Text, Type))
+  (Bound.Scope () (Expr t) a, Vector (Text, Type))
 insertAt ix fields entry@(field, _) =
   ( Bound.toScope $
     Syntax.IfThenElse
@@ -107,12 +107,12 @@ insertAt ix fields entry@(field, _) =
     (prefix, suffix) = Vector.splitAt ix fields
 
 convertFields ::
-  forall m a.
-  MonadError TypeError m =>
+  forall t m a.
+  MonadError (TypeError t) m =>
   QueryEnv a ->
   Vector (Text, Type) ->
   Vector (Text, Type) ->
-  m (Maybe (Bound.Scope () Expr a))
+  m (Maybe (Bound.Scope () (Expr t) a))
 convertFields env e a = do
   (res, _) <- go 0 a e a
   pure res
@@ -122,7 +122,7 @@ convertFields env e a = do
       Vector (Text, Type) ->
       Vector (Text, Type) ->
       Vector (Text, Type) ->
-      m (Maybe (Bound.Scope () Expr a), Vector (Text, Type))
+      m (Maybe (Bound.Scope () (Expr t) a), Vector (Text, Type))
     go !ix full expected actual =
       case expected ^? _Cons of
         Nothing ->
@@ -154,7 +154,7 @@ convertFields env e a = do
 identity :: Monad f => Bound.Scope () f b
 identity = Bound.toScope (pure $ Bound.B ())
 
-mapOptional :: Scope () Expr a -> Scope () Expr a
+mapOptional :: Scope () (Expr t) a -> Scope () (Expr t) a
 mapOptional f =
   Bound.toScope $
     Syntax.FoldOptional
@@ -167,7 +167,7 @@ mapOptional f =
       )
       (Syntax.Var $ Bound.B ())
 
-mapMany :: Scope () Expr a -> Scope () Expr a
+mapMany :: Scope () (Expr t) a -> Scope () (Expr t) a
 mapMany f =
   Bound.toScope $
     Syntax.For
@@ -177,11 +177,11 @@ mapMany f =
       (Bound.toScope $ unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f)
 
 convertExpr ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   QueryEnv a ->
   Type ->
   Type ->
-  m (Bound.Scope () Expr a)
+  m (Bound.Scope () (Expr t) a)
 convertExpr env expected actual =
   case expected of
     Syntax.TName n -> do
@@ -223,13 +223,13 @@ convertExpr env expected actual =
         Syntax.TOptional a' -> mapOptional <$> convertExpr env a a'
         _ -> throwError $ TypeMismatch expected actual
 
-language :: MonadError TypeError m => QueryEnv a -> Language -> m ()
+language :: MonadError (TypeError t) m => QueryEnv a -> Language -> m ()
 language env l =
   unless (l == _qeLanguage env) . throwError $
   LanguageMismatch l (_qeLanguage env)
 
 checkType ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   Type ->
   m ()
 checkType ty =
@@ -249,18 +249,18 @@ checkType ty =
     Syntax.TName{} -> pure ()
     Syntax.TInt -> pure ()
 
-mapQuery :: Bound.Scope () Expr a -> Bound.Scope () Expr a
+mapQuery :: Bound.Scope () (Expr t) a -> Bound.Scope () (Expr t) a
 mapQuery f =
   Bound.toScope . Syntax.Bind (Syntax.Var $ Bound.B ()) "__temp" .
   Bound.toScope . Syntax.Return $
   unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f
 
 checkExpr ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   QueryEnv a ->
-  Expr a ->
+  Expr t a ->
   Type ->
-  m (Expr a)
+  m (Expr t a)
 checkExpr env expr ty = do
   case expr of
     Syntax.Many values ->
@@ -284,11 +284,11 @@ checkExpr env expr ty = do
       pure $ Bound.instantiate1 expr' f
 
 inferRecord ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   QueryEnv a ->
   Map Text Type ->
-  Vector (Text, Expr a) ->
-  m (Expr a, Type)
+  Vector (Text, Expr t a) ->
+  m (Expr t a, Type)
 inferRecord env hints fields =
   let
     names = foldr (Set.insert . fst) mempty fields
@@ -312,10 +312,10 @@ inferRecord env hints fields =
     else throwError DuplicateRecordFields
 
 inferExpr ::
-  MonadError TypeError m =>
+  MonadError (TypeError t) m =>
   QueryEnv a ->
-  Expr a ->
-  m (Expr a, Type)
+  Expr t a ->
+  m (Expr t a, Type)
 inferExpr env expr =
   case expr of
     Syntax.SelectFrom table -> do
@@ -510,7 +510,7 @@ data DeclEnv
   , _deGlobalQueries :: Map Text Type
   }
 
-data DeclError
+data DeclError t
   = UnknownConstraint Text
   | ConstraintArgsMismatch Int Int
   | NotEnumerable Type
@@ -521,7 +521,7 @@ data DeclError
   | TableAlreadyDefined Text
   | VariableAlreadyDefined Text
   | DuplicateArgument Text
-  | TypeError TypeError
+  | TypeError (TypeError t)
 
 isEnumerable :: Type -> Bool
 isEnumerable ty = ty `Set.member` tys
@@ -535,7 +535,7 @@ data TableItemState
   }
 
 checkTableItem ::
-  ( MonadError DeclError m
+  ( MonadError (DeclError t) m
   , MonadState TableItemState m
   ) =>
   DeclEnv ->
@@ -567,7 +567,7 @@ checkTableItem _ item =
         _ -> throwError $ UnknownConstraint name
 
 checkDeclArg ::
-  ( MonadError DeclError m
+  ( MonadError (DeclError t) m
   , MonadState (Set Text) m
   ) =>
   DeclEnv ->
@@ -582,10 +582,10 @@ mapError :: MonadError b m => (a -> b) -> ExceptT a m x -> m x
 mapError f = (either throwError pure =<<) . runExceptT . withExceptT f
 
 checkDecl ::
-  MonadError DeclError m =>
+  MonadError (DeclError t) m =>
   DeclEnv ->
-  Decl ->
-  m Decl
+  Decl t ->
+  m (Decl t)
 checkDecl env decl =
   case decl of
     Syntax.Table name items -> do
@@ -682,9 +682,9 @@ mkTableInfo items =
         readFields
 
 checkDecls ::
-  MonadError DeclError m =>
+  MonadError (DeclError t) m =>
   DeclEnv ->
-  Vector Decl ->
+  Vector (Decl t) ->
   m ()
 checkDecls e decls = go e [0 .. Vector.length decls - 1]
   where
