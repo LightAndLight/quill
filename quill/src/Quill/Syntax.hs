@@ -1,14 +1,19 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# language FlexibleInstances #-}
 {-# language ViewPatterns #-}
 module Quill.Syntax
   ( Type(..)
+  , prettyType
   , Language(..)
   , Query(..)
+  , prettyQuery
   , Expr(..)
-  , ShowExpr(..)
+  , prettyExpr
   , recordPunned
   , Decl(..)
+  , prettyDecl
   , TableItem(..)
+  , prettyTableItem
   , bisubstExpr
   , bisubstQuery
   )
@@ -31,7 +36,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Traversable (fmapDefault, foldMapDefault)
 import Data.Vector (Vector)
-import Data.Void (Void)
+import qualified Data.Vector as Vector
+import Data.Void (Void, absurd)
 import Text.PrettyPrint.ANSI.Leijen (Doc)
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 
@@ -54,6 +60,7 @@ data Type
 data TableItem
   = Field Text Type
   | Constraint Text (Vector Text)
+  deriving (Eq, Show)
 
 data Query a b
   = SelectFrom Text
@@ -288,9 +295,13 @@ instance Eq2 Expr where
           _ -> False
 instance Eq a => Eq1 (Expr a) where; liftEq = liftEq2 (==)
 instance (Eq a, Eq b) => Eq (Expr a b) where; (==) = eq1
-newtype ShowExpr = ShowExpr (Expr Text Text) deriving Eq
-instance Show ShowExpr where
-  show (ShowExpr e) = show $ prettyExpr (Pretty.text . Text.unpack) (Pretty.text . Text.unpack) e
+instance Show (Expr Text Text) where
+  show e =
+    show $
+    prettyExpr
+      (Pretty.text . Text.unpack)
+      (Pretty.text . Text.unpack)
+      e
 instance Functor (Expr a) where; fmap = fmapDefault
 instance Foldable (Expr a) where; foldMap = foldMapDefault
 instance Traversable (Expr a) where; traverse = bitraverse pure
@@ -392,6 +403,7 @@ data Decl
       (Vector (Text, Type))
       Type
       (Scope Int (Expr Void) Void)
+  deriving Eq
 
 prettyExpr :: (a -> Doc) -> (b -> Doc) -> Expr a b -> Doc
 prettyExpr f g e =
@@ -503,4 +515,166 @@ prettyExpr f g e =
       Pretty.hsep [prettyExpr f g l, Pretty.text "==", prettyExpr f g r]
     NOT value ->
       Pretty.hsep [Pretty.text "not", prettyExpr f g value]
-    Embed{} -> Pretty.text "<query>"
+    Embed q -> prettyQuery g f q
+
+prettyQuery :: (a -> Doc) -> (b -> Doc) -> Query a b -> Doc
+prettyQuery f g q =
+  case q of
+    SelectFrom table ->
+      Pretty.hsep
+      [ Pretty.text "select"
+      , Pretty.text "from"
+      , Pretty.text $ Text.unpack table
+      ]
+    InsertInto value table ->
+      Pretty.hsep
+      [ Pretty.text "insert"
+      , prettyExpr g f value
+      , Pretty.text "into"
+      , Pretty.text $ Text.unpack table
+      ]
+    InsertIntoReturning value table ->
+      Pretty.hsep
+      [ Pretty.text "insert"
+      , prettyExpr g f value
+      , Pretty.text "into"
+      , Pretty.text $ Text.unpack table
+      , Pretty.text "returning"
+      ]
+    Bind value n rest ->
+      let
+        n' = Pretty.text (Text.unpack n)
+      in
+        Pretty.vsep
+        [ Pretty.hsep
+          [ n'
+          , Pretty.text "<-"
+          , prettyQuery f g value <> Pretty.char ';'
+          ]
+        , prettyQuery f (unvar (\() -> n') g) (Bound.fromScope rest)
+        ]
+    Return a -> Pretty.text "return" <> Pretty.space <> prettyExpr g f a
+    QVar x -> g x
+    QName x -> Pretty.text $ Text.unpack x
+
+prettyType :: Type -> Doc
+prettyType ty =
+  case ty of
+    TRecord fields ->
+      Pretty.braces . (Pretty.space <>) . (<> Pretty.space) . fold .
+      List.intersperse (Pretty.comma <> Pretty.space) $
+      foldr
+        (\(f, t) ->
+           (:) $
+           Pretty.hsep
+           [ Pretty.text $ Text.unpack f
+           , Pretty.char ':'
+           , prettyType t
+           ]
+        )
+        []
+        fields
+    TMany a ->
+      Pretty.text "Many" <> Pretty.space <>
+      (case a of
+         TQuery{} -> Pretty.parens
+         TMany{} -> Pretty.parens
+         TOptional{} -> Pretty.parens
+         _ -> id
+      ) (prettyType a)
+    TQuery a ->
+      Pretty.text "Query" <> Pretty.space <>
+      (case a of
+         TQuery{} -> Pretty.parens
+         TMany{} -> Pretty.parens
+         TOptional{} -> Pretty.parens
+         _ -> id
+      ) (prettyType a)
+    TOptional a ->
+      Pretty.text "Optional" <> Pretty.space <>
+      (case a of
+         TQuery{} -> Pretty.parens
+         TMany{} -> Pretty.parens
+         TOptional{} -> Pretty.parens
+         _ -> id
+      ) (prettyType a)
+    TName n -> Pretty.text $ Text.unpack n
+    TInt -> Pretty.text "Int"
+    TUnit -> Pretty.text "Unit"
+    TBool -> Pretty.text "Bool"
+
+prettyTableItem :: TableItem -> Doc
+prettyTableItem item =
+  case item of
+    Field field ty -> Pretty.hsep [Pretty.text (Text.unpack field), Pretty.char ':', prettyType ty]
+    Constraint name args ->
+      Pretty.text (Text.unpack name) <>
+      Pretty.parens (fold . List.intersperse Pretty.comma $ foldr ((:) . Pretty.text . Text.unpack) [] args)
+
+prettyDecl :: Decl -> Doc
+prettyDecl d =
+  case d of
+    Table table items ->
+      Pretty.vsep
+      [ Pretty.hsep [Pretty.text "table", Pretty.text (Text.unpack table), Pretty.char '{']
+      , fold . List.intersperse (Pretty.char ',' <> Pretty.line) $
+        foldr ((:) . Pretty.indent 2 . prettyTableItem) [] items
+      , Pretty.char '}'
+      ]
+    Type name value ->
+      Pretty.hsep
+      [ Pretty.text "type"
+      , Pretty.text $ Text.unpack name
+      , Pretty.char '='
+      , prettyType value <> Pretty.char ';'
+      ]
+    Query name args retTy body ->
+      Pretty.vsep
+      [ Pretty.hsep
+        [ Pretty.text "query"
+        , Pretty.text (Text.unpack name) <>
+          Pretty.parens
+          (fold . List.intersperse Pretty.comma $
+           foldr
+             (\(f, t) ->
+                (:) (Pretty.text (Text.unpack f) <> Pretty.char ':' <> Pretty.space <> prettyType t)
+             )
+             []
+             args
+          )
+        , Pretty.text "->"
+        , prettyType retTy
+        , Pretty.char '{'
+        ]
+      , Pretty.indent 2 $
+        prettyQuery
+          (unvar (Pretty.text . Text.unpack . fst . (args Vector.!)) absurd)
+          absurd
+          body
+      , Pretty.char '}'
+      ]
+    Function name args retTy body ->
+      Pretty.vsep
+      [ Pretty.hsep
+        [ Pretty.text "query"
+        , Pretty.text (Text.unpack name) <>
+          Pretty.parens
+          (fold . List.intersperse Pretty.comma $
+           foldr
+             (\(f, t) ->
+                (:) (Pretty.text (Text.unpack f) <> Pretty.char ':' <> Pretty.space <> prettyType t)
+             )
+             []
+             args
+          )
+        , Pretty.text "->"
+        , prettyType retTy
+        , Pretty.char '{'
+        ]
+      , Pretty.indent 2 $
+        prettyExpr
+          absurd
+          (unvar (Pretty.text . Text.unpack . fst . (args Vector.!)) absurd)
+          (Bound.fromScope body)
+      , Pretty.char '}'
+      ]

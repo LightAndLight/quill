@@ -53,7 +53,7 @@ data TypeError
   | TypeNotInScope Text
   | TableNotInScope Text
   | VariableNotInScope Text
-  | Can'tInferExpr Syntax.ShowExpr
+  | Can'tInferExpr (Expr Text Text)
   | LanguageMismatch Language Language
   | DuplicateRecordFields
   deriving (Eq, Show)
@@ -417,7 +417,7 @@ inferExpr env expr =
     Syntax.Some a -> do
       (a', aTy) <- inferExpr env a
       pure (Syntax.Some a', Syntax.TOptional aTy)
-    Syntax.None -> throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
+    Syntax.None -> throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.FoldOptional z (n, f) value -> do
       (value', valueTy) <- inferExpr env value
       case valueTy of
@@ -445,7 +445,7 @@ inferExpr env expr =
               (Vector.tail values)
           pure (Syntax.Many $ Vector.cons head' tail', Syntax.TMany headTy)
       | otherwise ->
-          throwError $ Can'tInferExpr (Syntax.ShowExpr $ bimap (_qeQueryNames env) (_qeVarNames env) expr)
+          throwError $ Can'tInferExpr (bimap (_qeQueryNames env) (_qeVarNames env) expr)
     Syntax.Int{} -> pure (expr, Syntax.TInt)
     Syntax.Bool{} -> pure (expr, Syntax.TBool)
     Syntax.IfThenElse a b c -> do
