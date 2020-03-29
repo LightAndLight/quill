@@ -6,11 +6,9 @@ import Prelude hiding (Ordering(..))
 
 import qualified Bound
 import Bound.Var (unvar)
-import Control.DeepSeq (deepseq)
 import Control.Exception (throwIO)
 import Control.Monad (unless)
 import Data.Bifunctor (bimap)
-import Data.CallStack (HasCallStack, SrcLoc, callStack)
 import Data.Text (Text)
 import Data.Void (Void, absurd)
 import GHC.Exts (fromString)
@@ -20,28 +18,6 @@ import Quill.Parser (Parser, parseString, decls, expr, query)
 import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
-import Test.HUnit.Lang (FailureReason(ExpectedButGot), HUnitFailure(HUnitFailure))
-import Test.HUnit (Assertion)
-
-assertEqual ::
-  (HasCallStack, Eq a) =>
-  (a -> String) ->
-  a ->
-  a ->
-  Assertion
-assertEqual showIt expected actual =
-  unless (actual == expected) $
-    (expectedMsg `deepseq`
-     actualMsg `deepseq`
-     throwIO (HUnitFailure location $ ExpectedButGot Nothing expectedMsg actualMsg)
-    )
-  where
-    location :: HasCallStack => Maybe SrcLoc
-    location = case reverse callStack of
-      (_, loc) : _ -> Just loc
-      [] -> Nothing
-    expectedMsg = showIt expected
-    actualMsg = showIt actual
 
 data ConvertTest
   = ConvertTest
@@ -122,19 +98,18 @@ doesn'tCheckTest ct = do
 
 data ParseTest where
   ParseTest ::
-    Eq a =>
+    (Eq a, Show a) =>
     { parse_input :: [String]
-    , parse_show :: a -> String
     , parse_parser :: Parser a
     , parse_output :: a
     } ->
     ParseTest
 
 parseTest :: ParseTest -> IO ()
-parseTest (ParseTest { parse_input = input, parse_show = showIt, parse_parser = p, parse_output = output }) =
+parseTest (ParseTest { parse_input = input, parse_parser = p, parse_output = output }) =
   case parseString p (unlines input) of
     Left err -> expectationFailure err
-    Right a -> assertEqual showIt output a
+    Right a -> a `shouldBe` output
 
 main :: IO ()
 main =
@@ -146,7 +121,6 @@ main =
         { parse_input =
           [ "type AUD = { dollars: Int, cents: Int };"
           ]
-        , parse_show = show
         , parse_parser = decls
         , parse_output =
           [ Type "AUD" $ TRecord [("dollars", TInt), ("cents", TInt)]
@@ -162,7 +136,6 @@ main =
           , "  cost : AUD"
           , "}"
           ]
-        , parse_show = show
         , parse_parser = decls
         , parse_output =
           [ Table "Expenses"
@@ -187,7 +160,6 @@ main =
           , "  )"
           , "}"
           ]
-        , parse_show = show
         , parse_parser = decls
         , parse_output =
           [ Query
