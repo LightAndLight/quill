@@ -23,18 +23,18 @@ data ConvertTest
   = ConvertTest
   { from :: Type
   , to :: Type
-  , inputTerm :: Expr Void
-  , outputTerm :: Expr Void
+  , inputTerm :: Expr () Void
+  , outputTerm :: Expr () Void
   }
 
 convertTest :: ConvertTest -> IO ()
 convertTest ct = do
   output <- either (error . show) pure $ checkExpr env (inputTerm ct) (to ct)
   let
-    expected :: Expr Text
+    expected :: Expr () Text
     expected = absurd <$> outputTerm ct
 
-    actual :: Expr Text
+    actual :: Expr () Text
     actual = absurd <$> output
   -- print $ Syntax.ShowExpr actual
   normaliseExpr actual `shouldBe` normaliseExpr expected
@@ -53,7 +53,7 @@ convertTest ct = do
 data CheckTest
   = CheckTest
   { check_type :: Type
-  , check_term :: Expr Void
+  , check_term :: Expr () Void
   }
 
 checkTest :: CheckTest -> IO ()
@@ -75,8 +75,8 @@ checkTest ct = do
 data Doesn'tCheckTest
   = Doesn'tCheckTest
   { doesn'tCheck_type :: Type
-  , doesn'tCheck_term :: Expr Void
-  , doesn'tCheck_error :: TypeError
+  , doesn'tCheck_term :: Expr () Void
+  , doesn'tCheck_error :: TypeError ()
   }
 
 doesn'tCheckTest :: Doesn'tCheckTest -> IO ()
@@ -121,7 +121,7 @@ main =
         { parse_input =
           [ "type AUD = { dollars: Int, cents: Int };"
           ]
-        , parse_parser = decls
+        , parse_parser = decls :: Parser [Decl ()]
         , parse_output =
           [ Type "AUD" $ TRecord [("dollars", TInt), ("cents", TInt)]
           ]
@@ -136,7 +136,7 @@ main =
           , "  cost : AUD"
           , "}"
           ]
-        , parse_parser = decls
+        , parse_parser = decls :: Parser [Decl ()]
         , parse_output =
           [ Table "Expenses"
             [ Field "id" TInt
@@ -160,7 +160,7 @@ main =
           , "  )"
           , "}"
           ]
-        , parse_parser = decls
+        , parse_parser = decls :: Parser [Decl ()]
         , parse_output =
           [ Query
               "selectExpensesById"

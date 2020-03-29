@@ -1,4 +1,5 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# language FlexibleContexts #-}
 {-# language FlexibleInstances #-}
 {-# language TemplateHaskell #-}
 {-# language ViewPatterns #-}
@@ -55,50 +56,50 @@ data TableItem
   | Constraint Text (Vector Text)
   deriving (Eq, Show)
 
-data Expr a
+data Expr t a
   = Name Text
   | Var a
 
   | SelectFrom Text
-  | InsertInto (Expr a) Text
-  | InsertIntoReturning (Expr a) Text
-  | Bind (Expr a) Text (Scope () Expr a)
-  | Return (Expr a)
+  | InsertInto (Expr t a) Text
+  | InsertIntoReturning (Expr t a) Text
+  | Bind (Expr t a) Text (Scope () (Expr t) a)
+  | Return (Expr t a)
 
   | For
       Text
-      (Expr a) -- values
-      (Maybe (Scope () Expr a)) -- predicate
-      (Scope () Expr a) -- yield
+      (Expr t a) -- values
+      (Maybe (Scope () (Expr t) a)) -- predicate
+      (Scope () (Expr t) a) -- yield
 
-  | Record (Vector (Text, Expr a))
-  | Project (Expr a) Text
-  | Extend Text (Expr a) (Expr a)
-  | Update Text (Text, Scope () Expr a) (Expr a)
-  | HasField (Expr a) Text
+  | Record (Vector (Text, Expr t a))
+  | Project (Expr t a) Text
+  | Extend Text (Expr t a) (Expr t a)
+  | Update Text (Text, Scope () (Expr t) a) (Expr t a)
+  | HasField (Expr t a) Text
 
   | Int Int
 
   | Bool Bool
-  | IfThenElse (Expr a) (Expr a) (Expr a)
+  | IfThenElse (Expr t a) (Expr t a) (Expr t a)
 
-  | Many (Vector (Expr a))
+  | Many (Vector (Expr t a))
 
-  | Some (Expr a)
+  | Some (Expr t a)
   | None
-  | FoldOptional (Expr a) (Text, Scope () Expr a) (Expr a)
+  | FoldOptional (Expr t a) (Text, Scope () (Expr t) a) (Expr t a)
 
-  | AND (Expr a) (Expr a)
-  | OR (Expr a) (Expr a)
-  | EQ (Expr a) (Expr a)
-  | NOT (Expr a)
+  | AND (Expr t a) (Expr t a)
+  | OR (Expr t a) (Expr t a)
+  | EQ (Expr t a) (Expr t a)
+  | NOT (Expr t a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Expr
 deriveShow1 ''Expr
-instance Eq a => Eq (Expr a) where; (==) = eq1
-instance Show a => Show (Expr a) where; showsPrec = showsPrec1
-instance Applicative Expr where; pure = return; (<*>) = ap
-instance Monad Expr where
+instance (Eq t, Eq a) => Eq (Expr t a) where; (==) = eq1
+instance (Show t, Show a) => Show (Expr t a) where; showsPrec = showsPrec1
+instance Applicative (Expr t) where; pure = return; (<*>) = ap
+instance Monad (Expr t) where
   return = Var
   m >>= f =
     case m of
@@ -135,26 +136,25 @@ instance Monad Expr where
       EQ l r -> EQ (l >>= f) (r >>= f)
       NOT value -> NOT (value >>= f)
 
-recordPunned :: (a -> Text) -> Vector a -> Expr a
+recordPunned :: (a -> Text) -> Vector a -> Expr t a
 recordPunned f fields = Record $ (\field -> (f field, Var field)) <$> fields
 
-
-data Decl
+data Decl t
   = Table Text (Vector TableItem)
   | Type Text Type
   | Query
       Text
       (Vector (Text, Type))
       Type
-      (Scope Int Expr Void)
+      (Scope Int (Expr t) Void)
   | Function
       Text
       (Vector (Text, Type))
       Type
-      (Scope Int Expr Void)
+      (Scope Int (Expr t) Void)
   deriving (Eq, Show)
 
-prettyExpr :: (a -> Doc) -> Expr a -> Doc
+prettyExpr :: (a -> Doc) -> Expr t a -> Doc
 prettyExpr f e =
   case e of
     SelectFrom table ->
@@ -353,7 +353,7 @@ prettyTableItem item =
       Pretty.text (Text.unpack name) <>
       Pretty.parens (fold . List.intersperse Pretty.comma $ foldr ((:) . Pretty.text . Text.unpack) [] args)
 
-prettyDecl :: Decl -> Doc
+prettyDecl :: Decl t -> Doc
 prettyDecl d =
   case d of
     Table table items ->

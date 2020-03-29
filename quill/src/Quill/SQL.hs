@@ -117,7 +117,7 @@ parens a = "(" <> a <> ")"
 
 expr ::
   (a -> Builder.Builder) ->
-  Expr a ->
+  Expr t a ->
   Builder.Builder
 expr f e =
   case e of

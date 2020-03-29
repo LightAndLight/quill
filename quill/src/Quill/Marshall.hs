@@ -23,11 +23,11 @@ class Marshall a where
   fromValueUnchecked :: Value -> Maybe a
 
 fromValue ::
-  forall a.
+  forall a t.
   Marshall a =>
   QueryEnv Void ->
   Value ->
-  Either TypeError a
+  Either (TypeError t) a
 fromValue env value = do
   value' <- checkExpr env (toExpr value) $ typeOf (Proxy :: Proxy a)
   case fromValueUnchecked =<< fromExpr value' of
