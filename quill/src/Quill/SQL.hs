@@ -1,3 +1,4 @@
+{-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 {-# language ViewPatterns #-}
 module Quill.SQL where
@@ -116,11 +117,13 @@ parens :: Builder.Builder -> Builder.Builder
 parens a = "(" <> a <> ")"
 
 expr ::
+  Show a =>
   (a -> Builder.Builder) ->
   Expr Info a ->
   Builder.Builder
 expr f e =
   case e of
+    Syntax.Info _ a -> expr f a
     Syntax.SelectFrom table ->
       "SELECT * FROM " <>
       Builder.byteString (encodeUtf8 table)
@@ -137,7 +140,19 @@ expr f e =
       Builder.byteString (encodeUtf8 table)
     Syntax.Bind q' _ rest ->
       expr
-        (unvar (\() -> parens $ expr f q') f)
+        (unvar
+           (\() ->
+              (case q' of
+                 Syntax.SelectFrom{} -> parens
+                 Syntax.InsertInto{} -> parens
+                 Syntax.InsertIntoReturning{} -> parens
+                 Syntax.Bind{} -> parens
+                 Syntax.Return{} -> parens
+                 _ -> id
+              )
+              (expr f q')
+           )
+           f)
         (Syntax.fromScope2 rest)
     Syntax.Return value -> expr f value
     Syntax.Update{} -> error "SQL.expr update"
@@ -174,9 +189,9 @@ expr f e =
       error "todo: SQL.expr name" n
     Syntax.HasField value field ->
       error "todo: SQL.expr hasfield" value field
-    Syntax.Project _ value field ->
+    Syntax.Project value field ->
       case Syntax.getAnn value of
-        Nothing -> error "SQL.expr project - no ann for value"
+        Nothing -> error $ "SQL.expr project - no ann for value: " <>  show value
         Just valueInfo ->
           let
             valueType = _infoType valueInfo
@@ -187,7 +202,8 @@ expr f e =
               Just valueOrigin ->
                 case valueOrigin of
                   Row ->
-                    (case value of
+                    (Syntax.underInfo' value $
+                     \_ -> \case
                        Syntax.Project{} -> id
                        Syntax.Var{} -> id
                        Syntax.Name{} -> id
@@ -198,13 +214,14 @@ expr f e =
                     "." <>
                     Builder.byteString (encodeUtf8 field)
                   Column ->
-                    (case value of
-                      Syntax.Project{} -> id
-                      Syntax.Var{} -> id
-                      Syntax.Name{} -> id
-                      Syntax.Int{} -> id
-                      Syntax.Bool{} -> id
-                      _ -> parens
+                    (Syntax.underInfo' value $
+                     \_ -> \case
+                       Syntax.Project{} -> id
+                       Syntax.Var{} -> id
+                       Syntax.Name{} -> id
+                       Syntax.Int{} -> id
+                       Syntax.Bool{} -> id
+                       _ -> parens
                     ) (expr f value) <>
                     "_" <>
                     Builder.byteString (encodeUtf8 field)
@@ -242,7 +259,6 @@ expr f e =
       " AND " <>
       (case b of
          Syntax.Project{} -> id
-         Syntax.Var{} -> id
          Syntax.Name{} -> id
          Syntax.Int{} -> id
          Syntax.Bool{} -> id
@@ -254,7 +270,6 @@ expr f e =
     Syntax.OR a b ->
       (case a of
          Syntax.Project{} -> id
-         Syntax.Var{} -> id
          Syntax.Name{} -> id
          Syntax.Int{} -> id
          Syntax.Bool{} -> id

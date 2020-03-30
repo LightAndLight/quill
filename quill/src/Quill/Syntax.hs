@@ -10,6 +10,8 @@ module Quill.Syntax
   , prettyType
   , Language(..)
   , Expr(..)
+  , underInfo
+  , underInfo'
   , getAnn
   , prettyExpr
   , recordPunned
@@ -21,6 +23,7 @@ module Quill.Syntax
   , fromScope2
   , toScope2
   , hoistScope2
+  , compose
   )
 where
 
@@ -112,9 +115,24 @@ instance Bifunctor f => Bifunctor (Scope2 x f) where
     bimap f (fmap (bimap f g)) .
     unscope . unscope2
 
+underInfo :: Expr t a -> (Expr t a -> Expr t a) -> Expr t a
+underInfo e f =
+  case e of
+    Info t a -> Info t $ underInfo a f
+    _ -> f e
+
+underInfo' :: Expr t a -> ((Expr t a -> Expr t a) -> Expr t a -> x) -> x
+underInfo' = go id
+  where
+    go g e f =
+      case e of
+        Info t a -> go (g . Info t) a f
+        _ -> f g e
+
 data Expr t a
   = Name Text
   | Var a
+  | Info t (Expr t a)
 
   | SelectFrom Text
   | InsertInto (Expr t a) Text
@@ -129,7 +147,7 @@ data Expr t a
       (Scope2 () Expr t a) -- yield
 
   | Record (Vector (Text, Expr t a))
-  | Project t (Expr t a) Text
+  | Project (Expr t a) Text
   | Extend Text (Expr t a) (Expr t a)
   | Update Text (Text, Scope2 () Expr t a) (Expr t a)
   | HasField (Expr t a) Text
@@ -164,6 +182,7 @@ instance Monad (Expr t) where
     case m of
       Name n -> Name n
       Var a -> f a
+      Info a b -> Info a (b >>= f)
 
       SelectFrom table -> SelectFrom table
       InsertInto value table -> InsertInto (value >>= f) table
@@ -174,7 +193,7 @@ instance Monad (Expr t) where
       For n value m_cond yield -> For n (value >>= f) ((`substScope2` f) <$> m_cond) (substScope2 yield f)
 
       Record values -> Record ((fmap.fmap) (>>= f) values)
-      Project ann value field -> Project ann (value >>= f) field
+      Project value field -> Project (value >>= f) field
       HasField value field -> HasField (value >>= f) field
       Extend field value rest -> Extend field (value >>= f) (rest >>= f)
       Update field (n, func) rest -> Update field (n, substScope2 func f) (rest >>= f)
@@ -201,38 +220,8 @@ recordPunned f fields = Record $ (\field -> (f field, Var field)) <$> fields
 getAnn :: Expr t a -> Maybe t
 getAnn e =
   case e of
-    Name{} -> Nothing
-    Var{} -> Nothing
-    SelectFrom _ -> Nothing
-    InsertInto _ _ -> Nothing
-    InsertIntoReturning _ _ -> Nothing
-    Bind _ _ _ -> Nothing
-    Return _ -> Nothing
-
-    For _ _ _ _ -> Nothing
-
-    Record _ -> Nothing
-    Project a _ _ -> Just a
-    Extend _ _ _ -> Nothing
-    Update _ _ _ -> Nothing
-    HasField _ _ -> Nothing
-
-    Int _ -> Nothing
-
-    Bool _ -> Nothing
-    IfThenElse _ _ _ -> Nothing
-
-    Many _ -> Nothing
-
-    Some _ -> Nothing
-    None -> Nothing
-    FoldOptional _ _ _ -> Nothing
-
-    AND _ _ -> Nothing
-    OR _ _ -> Nothing
-    EQ _ _ -> Nothing
-    NOT _ -> Nothing
-
+    Info a _ -> Just a
+    _ -> Nothing
 
 data Decl t t'
   = Table Text (Vector (TableItem t'))
@@ -252,6 +241,7 @@ data Decl t t'
 prettyExpr :: (a -> Doc) -> Expr t a -> Doc
 prettyExpr f e =
   case e of
+    Info _ a -> prettyExpr f a
     SelectFrom table ->
       Pretty.hsep
       [ Pretty.text "select"
@@ -325,7 +315,7 @@ prettyExpr f e =
         []
         values
     HasField record field -> prettyExpr f record <> Pretty.char '?' <> Pretty.text (Text.unpack field)
-    Project _ value field ->
+    Project value field ->
       prettyExpr f value <> Pretty.dot <> Pretty.text (Text.unpack field)
     Extend field value record ->
       Pretty.braces $
@@ -513,3 +503,8 @@ prettyDecl d =
           (Bound.fromScope body)
       , Pretty.char '}'
       ]
+
+compose :: Scope () (Expr t) a -> Scope () (Expr t) a -> Scope () (Expr t) a
+compose f (Bound.fromScope -> g) =
+  Bound.toScope $
+  Bound.instantiate1 g $ Bound.F <$> f

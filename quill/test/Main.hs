@@ -132,13 +132,14 @@ parseTest (ParseTest { parse_input = input, parse_parser = p, parse_output = out
 
 data CompileTest where
   CompileTest ::
-    (Show e, Show e') =>
+    (Show e, Show e', Show item') =>
     { compile_prelude :: [String]
     , compile_parsePrelude :: Parser prelude
     , compile_checkPrelude :: prelude -> Either e prelude'
     , compile_item :: [String]
     , compile_parseItem :: Parser item
     , compile_checkItem :: prelude' -> item -> Either e' item'
+    , compile_normalise :: item' -> item'
     , compile_gen :: prelude' -> item' -> ByteString
     , compile_output :: ByteString
     } ->
@@ -154,6 +155,7 @@ compileTest
    , compile_parseItem = parseItem
    , compile_checkItem = checkItem
    , compile_gen = gen
+   , compile_normalise = normalise
    , compile_output = output
    }
   ) =
@@ -168,8 +170,9 @@ compileTest
             Right item ->
               case checkItem prelude' item of
                 Left err -> expectationFailure $ show err
-                Right item' ->
-                  gen prelude' item' `shouldBe` output
+                Right item' -> do
+                  -- print (normalise item')
+                  gen prelude' (normalise item') `shouldBe` output
 
 main :: IO ()
 main =
@@ -212,11 +215,56 @@ main =
             in
               Check.checkExpr queryEnv e $
               TQuery anyTypeInfo (TMany anyTypeInfo $ TInt anyTypeInfo)
+        , compile_normalise = normaliseExpr
         , compile_gen =
           \_ e ->
             Lazy.toStrict . Builder.toLazyByteString $
             SQL.expr absurd e
-        , compile_output = ""
+        , compile_output = "SELECT expense.cost_dollars FROM ((SELECT * FROM Expenses)) AS expense"
+        }
+      it "2" $
+        compileTest $
+        CompileTest
+        { compile_prelude =
+          [ "type AUD = { dollars : Int, cents : Int };"
+          , "table Expenses {"
+          , "  id : Int,"
+          , "  cost : AUD"
+          , "}"
+          ]
+        , compile_parsePrelude = decls
+        , compile_checkPrelude =
+            Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        , compile_item =
+            [ "expenses <- select from Expenses;"
+            , "return ("
+            , "  for expense in expenses"
+            , "  yield expense.cost"
+            , ")"
+            ]
+        , compile_parseItem = query (const Nothing)
+        , compile_checkItem =
+          \env e ->
+            let
+              queryEnv =
+                QueryEnv
+                { _qeLanguage = _deLanguage env
+                , _qeNames = absurd
+                , _qeLocals = absurd
+                , _qeGlobalVars = _deGlobalVars env
+                , _qeGlobalQueries = _deGlobalQueries env
+                , _qeTypes = _deTypes env
+                , _qeTables = _deTables env
+                }
+            in
+              Check.checkExpr queryEnv e $
+              TQuery anyTypeInfo (TMany anyTypeInfo $ TName anyTypeInfo "AUD")
+        , compile_normalise = normaliseExpr
+        , compile_gen =
+          \_ e ->
+            Lazy.toStrict . Builder.toLazyByteString $
+            SQL.expr absurd e
+        , compile_output = "SELECT expense.cost_dollars, expense.cost_cents FROM ((SELECT * FROM Expenses)) AS expense"
         }
     describe "parse" $ do
       it "1" $
@@ -278,7 +326,7 @@ main =
                  "expense"
                  (Var $ Bound.B ())
                  (Just . Syntax.toScope2 $
-                  Project () (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.F $ Bound.B 0)
+                  Project (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.F $ Bound.B 0)
                  )
                  (Syntax.toScope2 . Var $ Bound.B ())
               )
@@ -290,7 +338,7 @@ main =
         { parse_input =
           [ "a.b.c" ]
         , parse_parser = (expr (const Nothing) <* eof) :: Parser (Expr () Void)
-        , parse_output = Project () (Project () (Name "a") "b") "c"
+        , parse_output = Project (Project (Name "a") "b") "c"
         }
     describe "convert" $ do
       it "{ x : Int, y : Bool } ==> { x : Int, y : Bool, z : Optional Int }" $
@@ -303,7 +351,11 @@ main =
         , inputTerm =
             Record [("x", Int 1), ("y", Bool True)]
         , outputTerm =
-            Record [("x", Int 1), ("y", Bool True), ("z", None)]
+            Record
+            [ ("x", Int 1)
+            , ("y", Bool True)
+            , ("z", None)
+            ]
         }
       it "{ x : Int, z : Int } ==> { x : Int, y : Optional Bool, z : Int }" $
         convertTest $
