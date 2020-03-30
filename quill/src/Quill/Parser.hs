@@ -18,6 +18,7 @@ import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Vector as Vector
 import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
+import qualified Quill.Syntax as Syntax
 import Text.Trifecta hiding (parseString)
 import qualified Text.Trifecta as Trifecta
 import qualified Text.Parser.Token.Highlight as Highlight
@@ -114,7 +115,7 @@ atomExpr var = hasField
           n <- variable
           _ <- symbol "->"
           value <- expr $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
-          pure (n, Bound.toScope value)
+          pure (n, Syntax.toScope2 value)
         _ <- symbolic '|'
         value <- expr var
         pure $ Update field (n, func) value
@@ -151,7 +152,7 @@ expr var =
               n <- variable
               _ <- symbol "->"
               value <- expr $ \n' -> if n == n' then Just (Bound.B ()) else Bound.F <$> var n'
-              pure (n, Bound.toScope value)
+              pure (n, Syntax.toScope2 value)
           value <- atomExpr var
           pure $ FoldOptional z (n, func) value
         Name "not" -> NOT <$> atomExpr var
@@ -172,7 +173,7 @@ expr var =
       m_cond <- optional (reserved "where" *> expr var')
       reserved "yield"
       yield <- atomExpr var'
-      pure $ For n value (Bound.toScope <$> m_cond) (Bound.toScope yield)
+      pure $ For n value (Syntax.toScope2 <$> m_cond) (Syntax.toScope2 yield)
 
 query :: (Monad m, TokenParsing m) => (Text -> Maybe a) -> m (Expr () a)
 query var =
@@ -204,7 +205,7 @@ query var =
       value <- atom
       rest <- do
         _ <- symbolic ';'
-        Bound.toScope <$>
+        Syntax.toScope2 <$>
           query (\n' -> if n' == n then Just (Bound.B ()) else Bound.F <$> var n')
       pure $ Bind value n rest
 

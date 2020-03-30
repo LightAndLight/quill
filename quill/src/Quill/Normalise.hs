@@ -7,7 +7,6 @@ module Quill.Normalise
 where
 
 import qualified Bound
-import Bound.Scope (hoistScope)
 import Data.Text as Text
 import Data.Vector as Vector
 import Quill.Syntax (Expr)
@@ -52,7 +51,7 @@ composeQuery ::
   Bound.Scope () (Expr t) b ->
   Bound.Scope () (Expr t) b
 composeQuery f (Bound.fromScope -> g) =
-  Bound.toScope $ Syntax.Bind g "__temp" (Bound.F <$> f)
+  Bound.toScope $ Syntax.Bind g "__temp" (Syntax.Scope2 $ Bound.F <$> f)
 
 normaliseExpr :: Expr t a -> Expr t a
 normaliseExpr e =
@@ -62,30 +61,33 @@ normaliseExpr e =
     Syntax.InsertIntoReturning value table -> Syntax.InsertIntoReturning (normaliseExpr value) table
     Syntax.Bind m n body ->
       case normaliseExpr m of
-        Syntax.Return value -> Bound.instantiate1 (Syntax.Return value) body
+        Syntax.Return value -> Bound.instantiate1 (Syntax.Return value) $ Syntax.unscope2 body
         Syntax.Bind m' n' body' ->
           normaliseExpr $
-          Syntax.Bind m' n' (composeQuery body body')
-        m' -> Syntax.Bind m' n $ hoistScope normaliseExpr body
+          Syntax.Bind
+            m'
+            n'
+            (Syntax.Scope2 $ composeQuery (Syntax.unscope2 body) (Syntax.unscope2 body'))
+        m' -> Syntax.Bind m' n $ Syntax.hoistScope2 normaliseExpr body
     Syntax.Return value -> Syntax.Return $ normaliseExpr value
     Syntax.For n value m_cond yield ->
       let
         value' = normaliseExpr value
-        m_cond' = hoistScope normaliseExpr <$> m_cond
-        yield' = hoistScope normaliseExpr yield
+        m_cond' = Syntax.hoistScope2 normaliseExpr <$> m_cond
+        yield' = Syntax.hoistScope2 normaliseExpr yield
       in
         case value' of
           Syntax.Many values ->
             case m_cond' of
               Nothing ->
                 Syntax.Many $
-                (\x -> normaliseExpr $ Bound.instantiate1 x yield') <$> values
+                (\x -> normaliseExpr $ Bound.instantiate1 x $ Syntax.unscope2 yield') <$> values
               Just cond' ->
                 let
                   m_conds =
                     traverse
                       (\x ->
-                        case normaliseExpr $ Bound.instantiate1 x cond' of
+                        case normaliseExpr $ Bound.instantiate1 x $ Syntax.unscope2 cond' of
                           Syntax.Bool b -> Just b
                           _ -> Nothing
                       )
@@ -98,7 +100,7 @@ normaliseExpr e =
                       Vector.mapMaybe
                         (\(b, v) ->
                            if b
-                           then Just . normaliseExpr $ Bound.instantiate1 v yield'
+                           then Just . normaliseExpr $ Bound.instantiate1 v $ Syntax.unscope2 yield'
                            else Nothing
                         )
                         (Vector.zip conds values)
@@ -129,14 +131,14 @@ normaliseExpr e =
           record' -> Syntax.Extend field value' record'
     Syntax.Update field (n, func) record ->
       let
-        func' = hoistScope normaliseExpr func
+        func' = Syntax.hoistScope2 normaliseExpr func
       in
         case normaliseExpr record of
           Syntax.Record values ->
             Syntax.Record $
             (\(field', v) ->
                if field' == field
-               then (field', normaliseExpr $ Bound.instantiate1 v func')
+               then (field', normaliseExpr $ Bound.instantiate1 v $ Syntax.unscope2 func')
                else (field', v)
             ) <$>
             values
@@ -158,11 +160,11 @@ normaliseExpr e =
     Syntax.FoldOptional z (n, func) value ->
       let
         z' = normaliseExpr z
-        func' = hoistScope normaliseExpr func
+        func' = Syntax.hoistScope2 normaliseExpr func
       in
         case normaliseExpr value of
           Syntax.None -> z'
-          Syntax.Some a -> normaliseExpr $ Bound.instantiate1 a func'
+          Syntax.Some a -> normaliseExpr $ Bound.instantiate1 a $ Syntax.unscope2 func'
           value' -> Syntax.FoldOptional z' (n, func') value'
     Syntax.AND l r ->
       let
