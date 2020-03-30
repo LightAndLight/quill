@@ -73,7 +73,7 @@ atomExpr var = hasField
       optional (symbolic '?' *> variable)
 
     project =
-      foldl (Project ()) <$>
+      foldl Project <$>
       atom <*>
       many (symbolic '.' *> variable)
 

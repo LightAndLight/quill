@@ -100,7 +100,7 @@ consistentTypeInfo ti ti' =
 data Info
   = Info
   { _infoType :: Type TypeInfo
-  }
+  } deriving Show
 
 resolveType ::
   MonadError (TypeError t) m =>
@@ -113,9 +113,6 @@ resolveType env n =
     pure
     (Map.lookup n $ _qeTypes env)
 
-compose :: Monad f => Scope () f a -> Scope () f a -> Scope () f a
-compose f (Bound.fromScope -> g) = Bound.toScope $ unvar (\() -> g) (pure . Bound.F) =<< Bound.fromScope f
-
 insertAt ::
   Int ->
   Vector (Text, Type TypeInfo) ->
@@ -124,20 +121,19 @@ insertAt ::
 insertAt ix fields entry@(field, _) =
   ( Bound.toScope $
     Syntax.IfThenElse
-      (Syntax.HasField (Syntax.Var $ Bound.B ()) field)
-      (Syntax.Var $ Bound.B ())
+      (Syntax.HasField boundVar field)
+      boundVar
       extended
   , prefix <> Vector.cons entry suffix
   )
   where
+    boundVar = Syntax.Var $ Bound.B ()
     extended =
       Syntax.Record $
       (keep <$> prefix) <>
       Vector.cons (field, Syntax.None) (keep <$> suffix)
-    keep (f, v) =
-      let info = Info { _infoType = v }
-      in
-        (f, Syntax.Project info (Syntax.Var (Bound.B ())) f)
+    keep (f, _) =
+      (f, Syntax.Project boundVar f)
     (prefix, suffix) = Vector.splitAt ix fields
 
 convertFields ::
@@ -161,7 +157,7 @@ convertFields env e a = do
       case expected ^? _Cons of
         Nothing ->
           case actual ^? _Cons of
-            Nothing -> pure (Just  identity, full)
+            Nothing -> pure (Just identity, full)
             Just{} -> pure (Nothing, full)
         Just ((field, ty), fields) ->
           case actual ^? _Cons of
@@ -172,8 +168,14 @@ convertFields env e a = do
                     Nothing -> pure (Nothing, full')
                     Just g -> do
                       f <- convertExpr env ty ty'
-                      let f' = Bound.toScope $ Syntax.Update field ("__temp", Syntax.Scope2 $ Bound.F <$> f) (Syntax.Var $ Bound.B ())
-                      pure (Just $ compose g f', full')
+                      let
+                        f' =
+                          Bound.toScope $
+                          Syntax.Update
+                            field
+                            ("__temp", Syntax.Scope2 $ Bound.F <$> f)
+                            (Syntax.Var $ Bound.B ())
+                      pure (Just $ Syntax.compose g f', full')
             _ ->
               case ty of
                 Syntax.TOptional{} -> do
@@ -182,13 +184,15 @@ convertFields env e a = do
                   case m_g of
                     Nothing -> pure (Nothing, full'')
                     Just g -> do
-                      pure (Just $ compose g f, full'')
+                      pure (Just $ Syntax.compose g f, full'')
                 _ -> pure (Nothing, full)
 
 identity :: Monad f => Bound.Scope () f b
 identity = Bound.toScope (pure $ Bound.B ())
 
-mapOptional :: Scope () (Expr t) a -> Scope () (Expr t) a
+mapOptional ::
+  Scope () (Expr Info) a ->
+  Scope () (Expr Info) a
 mapOptional f =
   Bound.toScope $
     Syntax.FoldOptional
@@ -196,13 +200,13 @@ mapOptional f =
       ( "__temp"
       , Syntax.Scope2 $
         Bound.F <$>
-        compose
+        Syntax.compose
           (Bound.toScope $ Syntax.Some $ Syntax.Var $ Bound.B ())
           f
       )
       (Syntax.Var $ Bound.B ())
 
-mapMany :: Scope () (Expr t) a -> Scope () (Expr t) a
+mapMany :: Scope () (Expr Info) a -> Scope () (Expr Info) a
 mapMany f =
   Bound.toScope $
     Syntax.For
@@ -256,20 +260,23 @@ convertExpr env expected actual =
       case actual of
         Syntax.TQuery tyInfo' a' -> do
           unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
-          mapQuery <$> convertExpr env a a'
+          f <- convertExpr env a a'
+          pure $ mapQuery f
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TMany tyInfo a -> do
       case actual of
         Syntax.TMany tyInfo' a' -> do
           unless (tyInfo `consistentTypeInfo` tyInfo') . error $
             "type info mismatch: " <> show tyInfo <> " " <> show tyInfo'
-          mapMany <$> convertExpr env a a'
+          f <- convertExpr env a a'
+          pure $ mapMany f
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TOptional tyInfo a -> do
       case actual of
         Syntax.TOptional tyInfo' a' -> do
           unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
-          mapOptional <$> convertExpr env a a'
+          f <- convertExpr env a a'
+          pure $ mapOptional f
         _ -> throwError $ TypeMismatch expected actual
 
 language :: MonadError (TypeError t) m => QueryEnv a -> Language -> m ()
@@ -298,7 +305,7 @@ checkType ty =
     Syntax.TName _ _ -> pure ()
     Syntax.TInt _ -> pure ()
 
-mapQuery :: Bound.Scope () (Expr t) a -> Bound.Scope () (Expr t) a
+mapQuery :: Bound.Scope () (Expr Info) a -> Bound.Scope () (Expr Info) a
 mapQuery f =
   Bound.toScope . Syntax.Bind (Syntax.Var $ Bound.B ()) "__temp" .
   Syntax.toScope2 . Syntax.Return $
@@ -371,6 +378,7 @@ inferExpr ::
   m (Expr Info a, Type TypeInfo)
 inferExpr env expr =
   case expr of
+    Syntax.Info _ a -> inferExpr env a
     Syntax.SelectFrom table -> do
       info <-
         maybe (throwError $ TableNotInScope table) pure $
@@ -548,7 +556,7 @@ inferExpr env expr =
                 )
         _ -> throwError $ ExpectedRecord recordTy
     Syntax.Record fields -> inferRecord env (Nothing, mempty) fields
-    Syntax.Project _ val field -> do
+    Syntax.Project val field -> do
       (val', valTy) <- inferExpr env val
       case valTy of
         Syntax.TRecord _ fields ->
@@ -556,7 +564,7 @@ inferExpr env expr =
             Nothing -> throwError $ MissingField valTy field
             Just (_, fieldTy) -> do
               let info = Info { _infoType = fieldTy }
-              pure (Syntax.Project info val' field, fieldTy)
+              pure (Syntax.Info info $ Syntax.Project val' field, fieldTy)
         _ -> throwError $ ExpectedRecord valTy
     Syntax.HasField record field -> do
       (record', recordTy) <- inferExpr env record
@@ -564,7 +572,11 @@ inferExpr env expr =
         Syntax.TRecord{} -> pure (Syntax.HasField record' field, Syntax.TBool anyTypeInfo)
         _ -> throwError $ ExpectedRecord recordTy
 
-    Syntax.Var n -> pure (Syntax.Var n, _qeLocals env n)
+    Syntax.Var n -> do
+      let
+        ty = _qeLocals env n
+        info = Info { _infoType = ty }
+      pure (Syntax.Info info $ Syntax.Var n, ty)
 
     Syntax.AND a b -> do
       a' <- checkExpr env a $ Syntax.TBool anyTypeInfo

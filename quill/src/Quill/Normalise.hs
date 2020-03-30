@@ -56,27 +56,45 @@ composeQuery f (Bound.fromScope -> g) =
 normaliseExpr :: Expr t a -> Expr t a
 normaliseExpr e =
   case e of
+    Syntax.Info t a -> Syntax.Info t $ normaliseExpr a
+    Syntax.Var a -> Syntax.Var a
     Syntax.SelectFrom{} -> e
     Syntax.InsertInto value table -> Syntax.InsertInto (normaliseExpr value) table
     Syntax.InsertIntoReturning value table -> Syntax.InsertIntoReturning (normaliseExpr value) table
     Syntax.Bind m n body ->
-      case normaliseExpr m of
-        Syntax.Return value -> Bound.instantiate1 (Syntax.Return value) $ Syntax.unscope2 body
+      Syntax.underInfo' (normaliseExpr m) $ \rewrap x ->
+      case x of
+        Syntax.Return value ->
+          normaliseExpr $ Bound.instantiate1 value $ Syntax.unscope2 body
         Syntax.Bind m' n' body' ->
           normaliseExpr $
           Syntax.Bind
             m'
             n'
             (Syntax.Scope2 $ composeQuery (Syntax.unscope2 body) (Syntax.unscope2 body'))
-        m' -> Syntax.Bind m' n $ Syntax.hoistScope2 normaliseExpr body
+        _ -> Syntax.Bind (rewrap x) n $ Syntax.hoistScope2 normaliseExpr body
     Syntax.Return value -> Syntax.Return $ normaliseExpr value
     Syntax.For n value m_cond yield ->
       let
-        value' = normaliseExpr value
         m_cond' = Syntax.hoistScope2 normaliseExpr <$> m_cond
         yield' = Syntax.hoistScope2 normaliseExpr yield
       in
+        Syntax.underInfo' (normaliseExpr value) $ \reWrap value' ->
         case value' of
+          Syntax.For n2 value2 m_cond2 yield2 ->
+            normaliseExpr $
+            Syntax.For
+              n2
+              value2
+              (case (m_cond2, m_cond') of
+                 (Nothing, Nothing) -> Nothing
+                 (Just cond2, Nothing) -> Just cond2
+                 (Nothing, Just cond') -> Just cond'
+                 (Just cond2, Just cond') ->
+                   Just . Syntax.toScope2 $
+                   Syntax.AND (Syntax.fromScope2 cond2) (Syntax.fromScope2 cond')
+              )
+              (Syntax.Scope2 $ Syntax.compose (Syntax.unscope2 yield') (Syntax.unscope2 yield2))
           Syntax.Many values ->
             case m_cond' of
               Nothing ->
@@ -87,14 +105,15 @@ normaliseExpr e =
                   m_conds =
                     traverse
                       (\x ->
-                        case normaliseExpr $ Bound.instantiate1 x $ Syntax.unscope2 cond' of
-                          Syntax.Bool b -> Just b
-                          _ -> Nothing
+                         Syntax.underInfo' (normaliseExpr $ Bound.instantiate1 x $ Syntax.unscope2 cond') $ \_ b' ->
+                         case b' of
+                           Syntax.Bool b -> Just b
+                           _ -> Nothing
                       )
                       values
                 in
                   case m_conds of
-                    Nothing -> Syntax.For n value' m_cond' yield'
+                    Nothing -> Syntax.For n (reWrap value') m_cond' yield'
                     Just conds ->
                       Syntax.Many $
                       Vector.mapMaybe
@@ -104,56 +123,63 @@ normaliseExpr e =
                            else Nothing
                         )
                         (Vector.zip conds values)
-          _ -> Syntax.For n value' m_cond' yield'
-    Syntax.Name{} -> e
-    Syntax.Var{} -> e
+          _ -> Syntax.For n (reWrap value') m_cond' yield'
+    Syntax.Name _ -> e
     Syntax.Record values -> Syntax.Record $ (fmap.fmap) normaliseExpr values
-    Syntax.Project ann value field ->
-      case normaliseExpr value of
+    Syntax.Project value field ->
+      Syntax.underInfo' (normaliseExpr value) $ \rewrap value' ->
+      case value' of
         Syntax.Record values ->
           case Vector.find ((field ==) . fst) values of
-            Just (_, result) -> result
+            Just (_, result) -> Syntax.underInfo' result (\_ -> id)
             _ -> undefined
-        value' -> Syntax.Project ann value' field
+        _ -> Syntax.Project (rewrap value') field
     Syntax.HasField value field ->
-      case normaliseExpr value of
+      Syntax.underInfo' (normaliseExpr value) $ \rewrap value' ->
+      case value' of
         Syntax.Record values ->
           case Vector.find ((field ==) . fst) values of
             Just{} -> Syntax.Bool True
             _ -> Syntax.Bool False
-        value' -> Syntax.HasField value' field
+        _ -> Syntax.HasField (rewrap value') field
     Syntax.Extend field value record ->
       let
         value' = normaliseExpr value
       in
-        case normaliseExpr record of
+        Syntax.underInfo' (normaliseExpr record) $ \rewrap record' ->
+        case record' of
           Syntax.Record values -> Syntax.Record $ Vector.cons (field, value') values
-          record' -> Syntax.Extend field value' record'
+          _ -> Syntax.Extend field value' (rewrap record')
     Syntax.Update field (n, func) record ->
       let
         func' = Syntax.hoistScope2 normaliseExpr func
       in
-        case normaliseExpr record of
-          Syntax.Record values ->
-            Syntax.Record $
-            (\(field', v) ->
-               if field' == field
-               then (field', normaliseExpr $ Bound.instantiate1 v $ Syntax.unscope2 func')
-               else (field', v)
-            ) <$>
-            values
-          record' -> Syntax.Update field (n, func') record'
+        Syntax.underInfo' (normaliseExpr record) $ \rewrap record' ->
+          case record' of
+            Syntax.Record values ->
+              Syntax.Record $
+              (\(field', v) ->
+                if field' == field
+                then (field', normaliseExpr $ Bound.instantiate1 v $ Syntax.unscope2 func')
+                else (field', v)
+              ) <$>
+              values
+            _ ->
+              Syntax.underInfo' (Syntax.fromScope2 func') $ \_ func'' ->
+              case func'' of
+                Syntax.Var (Bound.B ()) -> record'
+                _ -> Syntax.Update field (n, func') (rewrap record')
     Syntax.Int{} -> e
     Syntax.Bool{} -> e
     Syntax.IfThenElse a b c ->
       let
-        a' = normaliseExpr a
         b' = normaliseExpr b
         c' = normaliseExpr c
       in
+        Syntax.underInfo' (normaliseExpr a) $ \rewrap a' ->
         case a' of
           Syntax.Bool cond -> if cond then b' else c'
-          _ -> Syntax.IfThenElse a' b' c'
+          _ -> Syntax.IfThenElse (rewrap a') b' c'
     Syntax.Many values -> Syntax.Many $ normaliseExpr <$> values
     Syntax.Some value -> Syntax.Some $ normaliseExpr value
     Syntax.None -> e
@@ -162,43 +188,40 @@ normaliseExpr e =
         z' = normaliseExpr z
         func' = Syntax.hoistScope2 normaliseExpr func
       in
-        case normaliseExpr value of
-          Syntax.None -> z'
-          Syntax.Some a -> normaliseExpr $ Bound.instantiate1 a $ Syntax.unscope2 func'
-          value' -> Syntax.FoldOptional z' (n, func') value'
+        Syntax.underInfo' (normaliseExpr value) $ \rewrap value' ->
+        case value' of
+          Syntax.None -> Syntax.underInfo' z' $ \_ -> id
+          Syntax.Some a ->
+            Syntax.underInfo' (normaliseExpr $ Bound.instantiate1 a $ Syntax.unscope2 func') $ \_ -> id
+          _ -> Syntax.FoldOptional z' (n, func') (rewrap value')
     Syntax.AND l r ->
-      let
-        l' = normaliseExpr l
-        r' = normaliseExpr r
-      in
-        case l' of
-          Syntax.Bool False -> Syntax.Bool False
-          Syntax.Bool True -> r'
-          _ ->
-            case r' of
-              Syntax.Bool False -> Syntax.Bool False
-              _ -> Syntax.AND l' r'
+      Syntax.underInfo' (normaliseExpr l) $ \rewrapL l' ->
+      Syntax.underInfo' (normaliseExpr r) $ \rewrapR r' ->
+      case l' of
+        Syntax.Bool False -> l'
+        Syntax.Bool True -> r'
+        _ ->
+          case r' of
+            Syntax.Bool False -> l'
+            _ -> Syntax.AND (rewrapL l') (rewrapR r')
     Syntax.OR l r ->
-      let
-        l' = normaliseExpr l
-        r' = normaliseExpr r
-      in
-        case l' of
-          Syntax.Bool True -> Syntax.Bool True
-          Syntax.Bool False -> r'
-          _ ->
-            case r' of
-              Syntax.Bool True -> Syntax.Bool True
-              _ -> Syntax.OR l' r'
+      Syntax.underInfo' (normaliseExpr l) $ \rewrapL l' ->
+      Syntax.underInfo' (normaliseExpr r) $ \rewrapR r' ->
+      case l' of
+        Syntax.Bool True -> l'
+        Syntax.Bool False -> r'
+        _ ->
+          case r' of
+            Syntax.Bool True -> r'
+            _ -> Syntax.OR (rewrapL l') (rewrapR r')
     Syntax.EQ l r ->
-      let
-        l' = normaliseExpr l
-        r' = normaliseExpr r
-      in
-        case structuralEq l' r' of
-          Nothing -> Syntax.EQ l' r'
-          Just b -> Syntax.Bool b
+      Syntax.underInfo' (normaliseExpr l) $ \rewrapL l' ->
+      Syntax.underInfo' (normaliseExpr r) $ \rewrapR r' ->
+      case structuralEq l' r' of
+        Nothing -> Syntax.EQ (rewrapL l') (rewrapR r')
+        Just b -> Syntax.Bool b
     Syntax.NOT value ->
-      case normaliseExpr value of
+      Syntax.underInfo' (normaliseExpr value) $ \rewrap value' ->
+      case value' of
         Syntax.Bool b -> Syntax.Bool $ not b
-        value' -> Syntax.NOT value'
+        _ -> Syntax.NOT $ rewrap value'
