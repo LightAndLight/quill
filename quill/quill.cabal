@@ -52,6 +52,7 @@ test-suite quill-tests
   build-depends:       base ^>=4.12.0.0
                      , quill
                      , bound
+                     , bytestring >= 0.10
                      , hspec
                      , text
   hs-source-dirs:      test
