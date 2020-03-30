@@ -1,6 +1,7 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
 {-# language FlexibleInstances #-}
+{-# language RankNTypes #-}
 {-# language TemplateHaskell #-}
 {-# language ViewPatterns #-}
 module Quill.Syntax
@@ -16,22 +17,25 @@ module Quill.Syntax
   , prettyDecl
   , TableItem(..)
   , prettyTableItem
+  , Scope2(..)
+  , fromScope2
+  , toScope2
+  , hoistScope2
   )
 where
 
 import Prelude hiding (Ordering(..))
 
 import Bound ((>>>=), Scope(..))
+import Bound.Scope (hoistScope)
 import qualified Bound
-import Bound.Scope (bitraverseScope)
 import Bound.Var (unvar)
 import Control.Monad (ap)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Bifunctor.TH (deriveBifunctor)
-import Data.Deriving (deriveEq1, deriveShow1, deriveEq2, deriveShow2)
+import Data.Deriving (deriveEq2, deriveShow2)
 import Data.Foldable (fold)
 import Data.Functor.Classes (Eq1(..), Show1(..), Eq2(..), Show2(..), eq1, showsPrec1, showsUnaryWith)
-import Data.Functor.Identity (Identity(..))
 import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -76,6 +80,14 @@ data TableItem t
 
 newtype Scope2 x f a b = Scope2 { unscope2 :: Scope x (f a) b }
   deriving (Functor, Foldable, Traversable)
+fromScope2 :: Monad (f a) => Scope2 x f a b -> f a (Bound.Var x b)
+fromScope2 (Scope2 a) = Bound.fromScope a
+toScope2 :: Monad (f a) => f a (Bound.Var x b) -> Scope2 x f a b
+toScope2 = Scope2 . Bound.toScope
+substScope2 :: Monad (f a) => Scope2 x f a b -> (b -> f a c) -> Scope2 x f a c
+substScope2 (Scope2 a) f = Scope2 (a >>>= f)
+hoistScope2 :: Functor (f a) => (forall y. f a y -> g a' y) -> Scope2 x f a b -> Scope2 x g a' b
+hoistScope2 f (Scope2 a) = Scope2 (hoistScope f a)
 instance (Eq x, Eq2 f) => Eq2 (Scope2 x f) where
   liftEq2 f g (Scope2 (Scope a)) (Scope2 (Scope b)) =
     liftEq2 f (liftEq (liftEq2 f g)) a b
@@ -145,7 +157,6 @@ instance Eq a => Eq1 (Expr a) where; liftEq = liftEq2 (==)
 instance Show a => Show1 (Expr a) where; liftShowsPrec = liftShowsPrec2 showsPrec showList
 instance (Eq t, Eq a) => Eq (Expr t a) where; (==) = eq1
 instance (Show t, Show a) => Show (Expr t a) where; showsPrec = showsPrec1
-{-
 instance Applicative (Expr t) where; pure = return; (<*>) = ap
 instance Monad (Expr t) where
   return = Var
@@ -157,16 +168,16 @@ instance Monad (Expr t) where
       SelectFrom table -> SelectFrom table
       InsertInto value table -> InsertInto (value >>= f) table
       InsertIntoReturning value table -> InsertIntoReturning (value >>= f) table
-      Bind value n rest -> Bind (value >>= f) n (rest >>>= f)
+      Bind value n rest -> Bind (value >>= f) n (substScope2 rest f)
       Return value -> Return (value >>= f)
 
-      For n value m_cond yield -> For n (value >>= f) ((>>>= f) <$> m_cond) (yield >>>= f)
+      For n value m_cond yield -> For n (value >>= f) ((`substScope2` f) <$> m_cond) (substScope2 yield f)
 
       Record values -> Record ((fmap.fmap) (>>= f) values)
       Project ann value field -> Project ann (value >>= f) field
       HasField value field -> HasField (value >>= f) field
       Extend field value rest -> Extend field (value >>= f) (rest >>= f)
-      Update field (n, func) rest -> Update field (n, func >>>= f) (rest >>= f)
+      Update field (n, func) rest -> Update field (n, substScope2 func f) (rest >>= f)
 
       Int n -> Int n
 
@@ -177,7 +188,7 @@ instance Monad (Expr t) where
 
       Some value -> Some (value >>= f)
       None -> None
-      FoldOptional z (n, func) value -> FoldOptional (z >>= f) (n, func >>>= f) (value >>= f)
+      FoldOptional z (n, func) value -> FoldOptional (z >>= f) (n, substScope2 func f) (value >>= f)
 
       AND l r -> AND (l >>= f) (r >>= f)
       OR l r -> OR (l >>= f) (r >>= f)
@@ -272,10 +283,10 @@ prettyExpr f e =
           , Pretty.text "<-"
           , prettyExpr f value <> Pretty.char ';'
           ]
-        , prettyExpr (unvar (\() -> n') f) (Bound.fromScope rest)
+        , prettyExpr (unvar (\() -> n') f) (fromScope2 rest)
         ]
     Return a -> Pretty.text "return" <> Pretty.space <> prettyExpr f a
-    For n value m_cond (Bound.fromScope -> yield) ->
+    For n value m_cond (fromScope2 -> yield) ->
       let
         n' = Pretty.text $ Text.unpack n
       in
@@ -289,7 +300,7 @@ prettyExpr f e =
         ] <>
         (maybe
           []
-          (\(Bound.fromScope -> cond) ->
+          (\(fromScope2 -> cond) ->
             [ Pretty.hsep
               [ Pretty.text "where"
               , prettyExpr (unvar (\() -> n') f) cond
@@ -324,7 +335,7 @@ prettyExpr f e =
       , Pretty.char '|'
       , prettyExpr f record
       ]
-    Update field (n, Bound.fromScope -> func) record ->
+    Update field (n, fromScope2 -> func) record ->
       let
         n' = Pretty.text (Text.unpack n)
       in
@@ -355,7 +366,7 @@ prettyExpr f e =
     Some value ->
       Pretty.hsep [Pretty.text "Some", prettyExpr f value]
     None -> Pretty.text "None"
-    FoldOptional z (n, Bound.fromScope -> func) value ->
+    FoldOptional z (n, fromScope2 -> func) value ->
       let
         n' = Pretty.text (Text.unpack n)
       in
@@ -502,4 +513,3 @@ prettyDecl d =
           (Bound.fromScope body)
       , Pretty.char '}'
       ]
--}

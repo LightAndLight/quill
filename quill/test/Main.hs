@@ -180,14 +180,14 @@ main =
                TRecord () [("id", TInt ()), ("name", TName () "Text"), ("cost", TName () "AUD")]
               )
               (Bound.toScope . Bind (SelectFrom "Expenses") "expenses" .
-               Bound.toScope . Return $
+               Syntax.toScope2 . Return $
                For
                  "expense"
                  (Var $ Bound.B ())
-                 (Just . Bound.toScope $
+                 (Just . Syntax.toScope2 $
                   Project () (Var $ Bound.B ()) "id" `EQ` Var (Bound.F $ Bound.F $ Bound.B 0)
                  )
-                 (Bound.toScope . Var $ Bound.B ())
+                 (Syntax.toScope2 . Var $ Bound.B ())
               )
           ]
         }

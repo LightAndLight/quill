@@ -138,7 +138,7 @@ expr f e =
     Syntax.Bind q' _ rest ->
       expr
         (unvar (\() -> parens $ expr f q') f)
-        (Bound.fromScope rest)
+        (Syntax.fromScope2 rest)
     Syntax.Return value -> expr f value
     Syntax.Update{} -> error "SQL.expr update"
     Syntax.Extend{} -> error "SQL.expr extend"
@@ -150,9 +150,9 @@ expr f e =
         f' = unvar (\() -> Builder.byteString $ encodeUtf8 n) f
       in
       "SELECT " <>
-      (case Bound.fromScope yield of
+      (case Syntax.fromScope2 yield of
          Syntax.Var (Bound.B ()) -> "*"
-         _ -> expr f' (Bound.fromScope yield)
+         _ -> expr f' (Syntax.fromScope2 yield)
       ) <>
       " FROM " <>
       (case value of
@@ -169,7 +169,7 @@ expr f e =
         Nothing -> mempty
         Just cond ->
           " WHERE " <>
-          expr f' (Bound.fromScope cond)
+          expr f' (Syntax.fromScope2 cond)
     Syntax.Name n ->
       error "todo: SQL.expr name" n
     Syntax.HasField value field ->

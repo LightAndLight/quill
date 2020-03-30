@@ -162,7 +162,7 @@ convertFields env e a = do
                     Nothing -> pure (Nothing, full')
                     Just g -> do
                       f <- convertExpr env ty ty'
-                      let f' = Bound.toScope $ Syntax.Update field ("__temp", Bound.F <$> f) (Syntax.Var $ Bound.B ())
+                      let f' = Bound.toScope $ Syntax.Update field ("__temp", Syntax.Scope2 $ Bound.F <$> f) (Syntax.Var $ Bound.B ())
                       pure (Just $ compose g f', full')
             _ ->
               case ty of
@@ -184,7 +184,8 @@ mapOptional f =
     Syntax.FoldOptional
       Syntax.None
       ( "__temp"
-      , Bound.F <$>
+      , Syntax.Scope2 $
+        Bound.F <$>
         compose
           (Bound.toScope $ Syntax.Some $ Syntax.Var $ Bound.B ())
           f
@@ -198,7 +199,7 @@ mapMany f =
       "__temp"
       (Syntax.Var $ Bound.B ())
       Nothing
-      (Bound.toScope $ unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f)
+      (Syntax.toScope2 $ unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f)
 
 convertExpr ::
   MonadError (TypeError t) m =>
@@ -289,7 +290,7 @@ checkType ty =
 mapQuery :: Bound.Scope () (Expr t) a -> Bound.Scope () (Expr t) a
 mapQuery f =
   Bound.toScope . Syntax.Bind (Syntax.Var $ Bound.B ()) "__temp" .
-  Bound.toScope . Syntax.Return $
+  Syntax.toScope2 . Syntax.Return $
   unvar Bound.B (Bound.F . Bound.F) <$> Bound.fromScope f
 
 checkExpr ::
@@ -388,11 +389,11 @@ inferExpr env expr =
                , _qeLocals = unvar (\() -> ty) (_qeLocals env)
                }
               )
-              (Bound.fromScope rest)
+              (Syntax.fromScope2 rest)
           case restTy of
             Syntax.TQuery tyInfo' ty' -> do
               unless (tyInfo == tyInfo') $ error "type infos didn't match"
-              pure (Syntax.Bind value' n $ Bound.toScope rest', Syntax.TQuery tyInfo ty')
+              pure (Syntax.Bind value' n $ Syntax.toScope2 rest', Syntax.TQuery tyInfo ty')
             _ -> throwError $ ExpectedQuery restTy
         _ -> throwError $ ExpectedQuery valueTy
     Syntax.Return value -> do
@@ -417,8 +418,8 @@ inferExpr env expr =
                     (\() -> a)
                     (_qeLocals env)
               }
-          f' <- checkExpr env' (Bound.fromScope f) zTy
-          pure (Syntax.FoldOptional z' (n, Bound.toScope f') value', zTy)
+          f' <- checkExpr env' (Syntax.fromScope2 f) zTy
+          pure (Syntax.FoldOptional z' (n, Syntax.toScope2 f') value', zTy)
         _ -> throwError $ ExpectedOptional valueTy
     Syntax.Many values
       | Vector.length values > 0 -> do
@@ -468,16 +469,16 @@ inferExpr env expr =
             case m_cond of
               Nothing -> pure Nothing
               Just cond ->
-                Just . Bound.toScope <$>
+                Just . Syntax.toScope2 <$>
                 checkExpr
                   env'
-                  (Bound.fromScope cond)
+                  (Syntax.fromScope2 cond)
                   (Syntax.TBool anyTypeInfo)
           (yield', yieldTy) <-
             inferExpr
               env'
-              (Bound.fromScope yield)
-          pure (Syntax.For n value' m_cond' $ Bound.toScope yield', Syntax.TMany tyInfo yieldTy)
+              (Syntax.fromScope2 yield)
+          pure (Syntax.For n value' m_cond' $ Syntax.toScope2 yield', Syntax.TMany tyInfo yieldTy)
         _ -> throwError $ ExpectedMany valTy
     Syntax.Name n ->
       (,) (Syntax.Name n) <$>
@@ -515,9 +516,9 @@ inferExpr env expr =
                         (\() -> fieldTy)
                         (_qeLocals env)
                   }
-              (fun', fieldTy') <- inferExpr env' (Bound.fromScope fun)
+              (fun', fieldTy') <- inferExpr env' (Syntax.fromScope2 fun)
               pure
-                ( Syntax.Update field (n, Bound.toScope fun') record'
+                ( Syntax.Update field (n, Syntax.toScope2 fun') record'
                 , Syntax.TRecord tyInfo $
                   (\(f, t) -> if f == field then (f, fieldTy') else (f, t)) <$>
                   fields
