@@ -9,14 +9,22 @@ import Bound.Var (unvar)
 import Control.Exception (throwIO)
 import Control.Monad (unless)
 import Data.Bifunctor (bimap)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as Lazy
 import Data.Text (Text)
 import Data.Void (Void, absurd)
-import GHC.Exts (fromString)
-import Quill.Check (QueryEnv(..), TypeError(..), TypeInfo(..), checkExpr, mkTypeInfo)
+import GHC.Exts (fromList, fromString)
+import Quill.Check
+  ( DeclEnv(..), QueryEnv(..), TypeError(..), TypeInfo(..)
+  , checkExpr, mkTypeInfo
+  )
+import qualified Quill.Check as Check
 import Quill.Normalise (normaliseExpr)
-import Quill.Parser (Parser, parseString, decls, expr, query)
+import Quill.Parser (Parser, eof, parseString, decls, expr, query)
 import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
+import qualified Quill.SQL as SQL
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
 
 anyTypeInfo :: TypeInfo
@@ -122,9 +130,94 @@ parseTest (ParseTest { parse_input = input, parse_parser = p, parse_output = out
     Left err -> expectationFailure err
     Right a -> a `shouldBe` output
 
+data CompileTest where
+  CompileTest ::
+    (Show e, Show e') =>
+    { compile_prelude :: [String]
+    , compile_parsePrelude :: Parser prelude
+    , compile_checkPrelude :: prelude -> Either e prelude'
+    , compile_item :: [String]
+    , compile_parseItem :: Parser item
+    , compile_checkItem :: prelude' -> item -> Either e' item'
+    , compile_gen :: prelude' -> item' -> ByteString
+    , compile_output :: ByteString
+    } ->
+    CompileTest
+
+compileTest :: CompileTest -> IO ()
+compileTest
+  (CompileTest
+   { compile_prelude = prelude
+   , compile_parsePrelude = parsePrelude
+   , compile_checkPrelude = checkPrelude
+   , compile_item = item
+   , compile_parseItem = parseItem
+   , compile_checkItem = checkItem
+   , compile_gen = gen
+   , compile_output = output
+   }
+  ) =
+  case parseString parsePrelude (unlines prelude) of
+    Left err -> expectationFailure err
+    Right prelude ->
+      case checkPrelude prelude of
+        Left err -> expectationFailure $ show err
+        Right prelude' ->
+          case parseString parseItem (unlines item) of
+            Left err -> expectationFailure err
+            Right item ->
+              case checkItem prelude' item of
+                Left err -> expectationFailure $ show err
+                Right item' ->
+                  gen prelude' item' `shouldBe` output
+
 main :: IO ()
 main =
   hspec $ do
+    describe "compile" $ do
+      it "1" $
+        compileTest $
+        CompileTest
+        { compile_prelude =
+          [ "type AUD = { dollars : Int, cents : Int };"
+          , "table Expenses {"
+          , "  id : Int,"
+          , "  cost : AUD"
+          , "}"
+          ]
+        , compile_parsePrelude = decls
+        , compile_checkPrelude =
+            Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        , compile_item =
+            [ "expenses <- select from Expenses;"
+            , "return ("
+            , "  for expense in expenses"
+            , "  yield expense.cost.dollars"
+            , ")"
+            ]
+        , compile_parseItem = query (const Nothing)
+        , compile_checkItem =
+          \env e ->
+            let
+              queryEnv =
+                QueryEnv
+                { _qeLanguage = _deLanguage env
+                , _qeNames = absurd
+                , _qeLocals = absurd
+                , _qeGlobalVars = _deGlobalVars env
+                , _qeGlobalQueries = _deGlobalQueries env
+                , _qeTypes = _deTypes env
+                , _qeTables = _deTables env
+                }
+            in
+              Check.checkExpr queryEnv e $
+              TQuery anyTypeInfo (TMany anyTypeInfo $ TInt anyTypeInfo)
+        , compile_gen =
+          \_ e ->
+            Lazy.toStrict . Builder.toLazyByteString $
+            SQL.expr absurd e
+        , compile_output = ""
+        }
     describe "parse" $ do
       it "1" $
         parseTest $
@@ -190,6 +283,14 @@ main =
                  (Syntax.toScope2 . Var $ Bound.B ())
               )
           ]
+        }
+      it "4" $
+        parseTest $
+        ParseTest
+        { parse_input =
+          [ "a.b.c" ]
+        , parse_parser = (expr (const Nothing) <* eof) :: Parser (Expr () Void)
+        , parse_output = Project () (Project () (Name "a") "b") "c"
         }
     describe "convert" $ do
       it "{ x : Int, y : Bool } ==> { x : Int, y : Bool, z : Optional Int }" $

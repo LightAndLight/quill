@@ -1,7 +1,7 @@
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language RankNTypes #-}
 module Quill.Parser
-  ( Parser
+  ( Parser, eof
   , expr
   , query
   , type_
@@ -19,9 +19,12 @@ import Data.Text (Text)
 import qualified Data.Vector as Vector
 import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
-import Text.Trifecta hiding (parseString)
+import Text.Trifecta hiding (parseString, eof)
 import qualified Text.Trifecta as Trifecta
 import qualified Text.Parser.Token.Highlight as Highlight
+
+eof :: CharParsing m => m ()
+eof = many space *> Trifecta.eof
 
 varStyle :: CharParsing m => IdentifierStyle m
 varStyle =
@@ -70,13 +73,9 @@ atomExpr var = hasField
       optional (symbolic '?' *> variable)
 
     project =
-      (\e m_field ->
-         case m_field of
-           Nothing -> e
-           Just field -> Project () e field
-      ) <$>
+      foldl (Project ()) <$>
       atom <*>
-      optional (symbolic '.' *> variable)
+      many (symbolic '.' *> variable)
 
     atom =
       (\v -> maybe (Name v) Var $ var v) <$> variable <|>
@@ -138,7 +137,7 @@ expr var =
 
     or_ = foldl OR <$> eq <*> many (symbol "||" *> eq)
 
-    eq = EQ <$> app <* symbol "==" <*> app
+    eq = (\a -> maybe a (EQ a)) <$> app <*> optional (symbol "==" *> app)
 
     app = do
       f <- atomExpr var

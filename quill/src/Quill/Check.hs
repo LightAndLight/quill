@@ -17,6 +17,7 @@ module Quill.Check
   , checkExpr
   , inferExpr
   , DeclEnv(..)
+  , emptyDeclEnv
   , DeclError(..)
   , checkDecl
   , checkDecls
@@ -86,6 +87,15 @@ data TypeInfo
   = TypeInfo
   { _typeInfoOrigin :: Maybe Origin
   } deriving (Eq, Show)
+
+consistentTypeInfo :: TypeInfo -> TypeInfo -> Bool
+consistentTypeInfo ti ti' =
+  case _typeInfoOrigin ti of
+    Nothing -> True
+    Just origin ->
+      case _typeInfoOrigin ti' of
+        Nothing -> True
+        Just origin' -> origin == origin'
 
 data Info
   = Info
@@ -218,7 +228,7 @@ convertExpr env expected actual =
     Syntax.TRecord tyInfo fields ->
       case actual of
         Syntax.TRecord tyInfo' fields' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           m_fields'' <- convertFields env fields fields'
           case m_fields'' of
             Nothing -> throwError $ TypeMismatch expected actual
@@ -227,37 +237,38 @@ convertExpr env expected actual =
     Syntax.TInt tyInfo ->
       case actual of
         Syntax.TInt tyInfo' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           pure identity
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TUnit tyInfo ->
       case actual of
         Syntax.TUnit tyInfo' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           pure identity
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TBool tyInfo ->
       case actual of
         Syntax.TBool tyInfo' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           pure identity
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TQuery tyInfo a -> do
       case actual of
         Syntax.TQuery tyInfo' a' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           mapQuery <$> convertExpr env a a'
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TMany tyInfo a -> do
       case actual of
         Syntax.TMany tyInfo' a' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') . error $
+            "type info mismatch: " <> show tyInfo <> " " <> show tyInfo'
           mapMany <$> convertExpr env a a'
         _ -> throwError $ TypeMismatch expected actual
     Syntax.TOptional tyInfo a -> do
       case actual of
         Syntax.TOptional tyInfo' a' -> do
-          unless (tyInfo == tyInfo') $ error "type info mismatch"
+          unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type info mismatch"
           mapOptional <$> convertExpr env a a'
         _ -> throwError $ TypeMismatch expected actual
 
@@ -364,7 +375,13 @@ inferExpr env expr =
       info <-
         maybe (throwError $ TableNotInScope table) pure $
         Map.lookup table (_qeTables env)
-      pure (Syntax.SelectFrom table, Syntax.TQuery anyTypeInfo (_tiReadType info))
+      pure
+        ( Syntax.SelectFrom table
+        , Syntax.TQuery anyTypeInfo $
+          Syntax.TMany
+            (anyTypeInfo { _typeInfoOrigin = Just Rows })
+            (_tiReadType info)
+        )
     Syntax.InsertInto value table -> do
       info <-
         maybe (throwError $ TableNotInScope table) pure $
@@ -377,7 +394,13 @@ inferExpr env expr =
         maybe (throwError $ TableNotInScope table) pure $
         Map.lookup table (_qeTables env)
       value' <- checkExpr env value (_tiWriteType info)
-      pure (Syntax.InsertIntoReturning value' table, Syntax.TQuery anyTypeInfo (_tiReadType info))
+      pure
+        ( Syntax.InsertIntoReturning value' table
+        , Syntax.TQuery anyTypeInfo $
+          Syntax.TMany
+            (anyTypeInfo { _typeInfoOrigin = Just Rows })
+            (_tiReadType info)
+        )
     Syntax.Bind value n rest -> do
       (value', valueTy) <- inferExpr env value
       case valueTy of
@@ -392,7 +415,7 @@ inferExpr env expr =
               (Syntax.fromScope2 rest)
           case restTy of
             Syntax.TQuery tyInfo' ty' -> do
-              unless (tyInfo == tyInfo') $ error "type infos didn't match"
+              unless (tyInfo `consistentTypeInfo` tyInfo') $ error "type infos didn't match"
               pure (Syntax.Bind value' n $ Syntax.toScope2 rest', Syntax.TQuery tyInfo ty')
             _ -> throwError $ ExpectedQuery restTy
         _ -> throwError $ ExpectedQuery valueTy
@@ -568,6 +591,16 @@ data DeclEnv
   , _deGlobalQueries :: Map Text (Type TypeInfo)
   }
 
+emptyDeclEnv :: Language -> DeclEnv
+emptyDeclEnv l =
+  DeclEnv
+  { _deLanguage = l
+  , _deTypes = mempty
+  , _deTables = mempty
+  , _deGlobalVars = mempty
+  , _deGlobalQueries = mempty
+  }
+
 data DeclError t t'
   = UnknownConstraint Text
   | ConstraintArgsMismatch Int Int
@@ -580,6 +613,7 @@ data DeclError t t'
   | VariableAlreadyDefined Text
   | DuplicateArgument Text
   | TypeError (TypeError t)
+  deriving Show
 
 isEnumerable :: Type () -> Bool
 isEnumerable ty = ty `Set.member` tys
@@ -837,15 +871,15 @@ checkDecls ::
   MonadError (DeclError t t') m =>
   DeclEnv ->
   Vector (Decl t t') ->
-  m ()
+  m DeclEnv
 checkDecls e decls = go e [0 .. Vector.length decls - 1]
   where
     go ::
       MonadError (DeclError t t') m =>
       DeclEnv ->
       [Int] ->
-      m ()
-    go _ [] = pure ()
+      m DeclEnv
+    go env [] = pure env
     go env (ix:ixs) = do
       decl <- checkDecl env $ decls Vector.! ix
       case decl of
