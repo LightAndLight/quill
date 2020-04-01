@@ -29,7 +29,7 @@ import Bound.Scope (Scope(..))
 import Bound.Var (unvar)
 import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
-import Control.Monad (unless, when)
+import Control.Monad (join, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
 import Control.Monad.State (MonadState, evalStateT, gets, modify)
 import Data.Foldable (traverse_)
@@ -62,7 +62,8 @@ data TypeError t
 
 data TableInfo
   = TableInfo
-  { _tiReadType :: Type TypeInfo
+  { _tiFieldNames :: Vector (Text, (Text, Vector Text))
+  , _tiReadType :: Type TypeInfo
   , _tiWriteType :: Type TypeInfo
   }
 
@@ -78,8 +79,8 @@ data QueryEnv a
   }
 
 data Origin
-  = Rows
-  | Row
+  = Rows Text
+  | Row Text
   | Column
   deriving (Eq, Show)
 
@@ -387,7 +388,7 @@ inferExpr env expr =
         ( Syntax.SelectFrom table
         , Syntax.TQuery anyTypeInfo $
           Syntax.TMany
-            (anyTypeInfo { _typeInfoOrigin = Just Rows })
+            (anyTypeInfo { _typeInfoOrigin = Just $ Rows table })
             (_tiReadType info)
         )
     Syntax.InsertInto value table -> do
@@ -406,7 +407,7 @@ inferExpr env expr =
         ( Syntax.InsertIntoReturning value' table
         , Syntax.TQuery anyTypeInfo $
           Syntax.TMany
-            (anyTypeInfo { _typeInfoOrigin = Just Rows })
+            (anyTypeInfo { _typeInfoOrigin = Just $ Rows table })
             (_tiReadType info)
         )
     Syntax.Bind value n rest -> do
@@ -466,7 +467,7 @@ inferExpr env expr =
               { _typeInfoOrigin = do
                   origin <- _typeInfoOrigin headAnn
                   case origin of
-                    Row -> pure Rows
+                    Row table -> pure $ Rows table
                     _ -> pure origin
               }
           pure
@@ -802,7 +803,7 @@ mkTypeInfo env m_origin t =
            (mkTypeInfo env $ do
               origin <- m_origin
               case origin of
-                Row -> pure Column
+                Row _ -> pure Column
                 _ -> Nothing
            )
            fields
@@ -818,7 +819,7 @@ mkTypeInfo env m_origin t =
       mkTypeInfo env (do
         origin <- m_origin
         case origin of
-          Rows -> pure Row
+          Rows table -> pure $ Row table
           _ -> Nothing
       )
       a
@@ -831,19 +832,42 @@ mkTypeInfo env m_origin t =
     Syntax.TName _ n -> mkTypeInfo env m_origin =<< resolveType env n
 
 mkTableInfo ::
+  forall t m.
   MonadError (TypeError t) m =>
   QueryEnv Void ->
+  Text ->
   Vector (TableItem TypeInfo) ->
   m TableInfo
-mkTableInfo env items = do
+mkTableInfo env table items = do
   readFields <- mkReadFields
   writeFields <- mkWriteFields readFields
+  fieldNames <-
+    Vector.mapMaybe
+      (\(k, entry) -> do
+         case entry ^? _Cons of
+           Nothing -> Nothing
+           Just (f, fs) -> Just (k, (f, fs))
+      ) <$>
+    traverse (\(k, v) -> (,) k <$> mkFieldName k v) readFields
+  let info = TypeInfo { _typeInfoOrigin = Just $ Row table }
   pure $
     TableInfo
-    { _tiReadType = Syntax.TRecord (TypeInfo { _typeInfoOrigin = Just Row }) readFields
-    , _tiWriteType = Syntax.TRecord (TypeInfo { _typeInfoOrigin = Just Row }) writeFields
+    { _tiFieldNames = fieldNames
+    , _tiReadType = Syntax.TRecord info readFields
+    , _tiWriteType = Syntax.TRecord info writeFields
     }
   where
+    mkFieldName ::
+      Text ->
+      Type TypeInfo ->
+      m (Vector Text) -- a single quill column name can map to multiple SQL column names
+    mkFieldName k ty =
+      case ty of
+        Syntax.TRecord _ fields ->
+          fmap ((<>) k "_" <>) . join <$>
+          traverse (uncurry mkFieldName) fields
+        _ -> pure [k]
+
     unaryConstraints =
       Vector.foldr
         (\case
@@ -909,7 +933,7 @@ checkDecls e decls = go e [0 .. Vector.length decls - 1]
               , _qeTypes = _deTypes env
               , _qeTables = _deTables env
               }
-          items' <- mapError TypeError $ mkTableInfo env' items
+          items' <- mapError TypeError $ mkTableInfo env' name items
           go (env { _deTables = Map.insert name items' (_deTables env) }) ixs
         Syntax.Query name args retTy _ -> error "todo: add query to scope" name args retTy
         Syntax.Function name args retTy _ -> error "todo: add function to scope" name args retTy
