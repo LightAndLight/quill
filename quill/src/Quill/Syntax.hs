@@ -17,6 +17,7 @@ module Quill.Syntax
   , recordPunned
   , Decl(..)
   , prettyDecl
+  , Constraint(..)
   , TableItem(..)
   , prettyTableItem
   , Scope2(..)
@@ -76,9 +77,15 @@ getTypeAnn t =
     TName a _ -> a
     TInt a -> a
 
+data Constraint
+  = AutoIncrement
+  | PrimaryKey
+  | Other Text
+  deriving (Eq, Ord, Show)
+
 data TableItem t
   = Field Text (Type t)
-  | Constraint Text (Vector Text)
+  | Constraint Constraint (Vector Text)
   deriving (Eq, Show)
 
 newtype Scope2 x f a b = Scope2 { unscope2 :: Scope x (f a) b }
@@ -430,12 +437,19 @@ prettyType ty =
     TUnit _ -> Pretty.text "Unit"
     TBool _ -> Pretty.text "Bool"
 
+prettyConstraint :: Constraint -> Doc
+prettyConstraint constr =
+  case constr of
+    AutoIncrement -> Pretty.text "AUTO_INCREMENT"
+    PrimaryKey -> Pretty.text "PRIMARY KEY"
+    Other name -> Pretty.text (Text.unpack name)
+
 prettyTableItem :: TableItem t -> Doc
 prettyTableItem item =
   case item of
     Field field ty -> Pretty.hsep [Pretty.text (Text.unpack field), Pretty.char ':', prettyType ty]
-    Constraint name args ->
-      Pretty.text (Text.unpack name) <>
+    Constraint constr args ->
+      prettyConstraint constr <>
       Pretty.parens (fold . List.intersperse Pretty.comma $ foldr ((:) . Pretty.text . Text.unpack) [] args)
 
 prettyDecl :: Decl t t' -> Doc

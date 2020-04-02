@@ -20,7 +20,7 @@ import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Builder as Builder
-import Data.Foldable (fold)
+import Data.Foldable (fold, foldl')
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -98,6 +98,12 @@ compileColumn env tableInfo colName colTy cons =
         Left{} -> undefined
         Right ty' -> compileColumn env tableInfo colName ty' cons
 
+renderConstraint :: Syntax.Constraint -> Text
+renderConstraint c =
+  case c of
+    Syntax.AutoIncrement -> "AUTO_INCREMENT"
+    Syntax.PrimaryKey -> "PRIMARY KEY"
+    Syntax.Other t -> t
 
 compileTable ::
   Check.DeclEnv ->
@@ -147,27 +153,27 @@ compileTable env tableName items =
       , [(Text, Vector Text)] -- higher arity constraints
       )
     gatherConstraints =
-      foldr
-        (\i (cols, info, constrs) ->
+      foldl'
+        (\(cols, info, constrs) i ->
            case i of
              Syntax.Field name ty ->
-               ( name : cols
+               ( cols ++ [name]
                , Map.insert name (ty, []) info
                , constrs
                )
-             Syntax.Constraint name args
+             Syntax.Constraint constr args
                | Vector.length args == 1 ->
-                   ( cols
-                   , Map.adjust
-                       (\(ty, cs) -> (ty, name : cs))
-                       (args Vector.! 0)
-                       info
-                   , constrs
-                   )
+                 ( cols
+                 , Map.adjust
+                     (\(ty, cs) -> (ty, cs ++ [renderConstraint constr]))
+                     (args Vector.! 0)
+                     info
+                 , constrs
+                 )
                | otherwise ->
                  ( cols
                  , info
-                 , (name, args) : constrs
+                 , constrs ++ [(renderConstraint constr, args)]
                  )
         )
         ([], Map.empty, [])
