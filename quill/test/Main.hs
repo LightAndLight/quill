@@ -132,7 +132,7 @@ parseTest (ParseTest { parse_input = input, parse_parser = p, parse_output = out
 
 data CompileTest where
   CompileTest ::
-    (Show e, Show e', Show item') =>
+    (Show e, Show e', Show item', Show compileError) =>
     { compile_prelude :: [String]
     , compile_parsePrelude :: Parser prelude
     , compile_checkPrelude :: prelude -> Either e prelude'
@@ -140,7 +140,7 @@ data CompileTest where
     , compile_parseItem :: Parser item
     , compile_checkItem :: prelude' -> item -> Either e' item'
     , compile_normalise :: item' -> item'
-    , compile_gen :: prelude' -> item' -> ByteString
+    , compile_gen :: prelude' -> item' -> Either compileError ByteString
     , compile_output :: ByteString
     } ->
     CompileTest
@@ -172,7 +172,9 @@ compileTest
                 Left err -> expectationFailure $ show err
                 Right item' -> do
                   -- print (normalise item')
-                  gen prelude' (normalise item') `shouldBe` output
+                  case gen prelude' (normalise item') of
+                    Left err -> expectationFailure $ show err
+                    Right code -> code `shouldBe` output
 
 main :: IO ()
 main =
@@ -217,10 +219,10 @@ main =
               TQuery anyTypeInfo (TMany anyTypeInfo $ TInt anyTypeInfo)
         , compile_normalise = normaliseExpr
         , compile_gen =
-          \_ e ->
-            Lazy.toStrict . Builder.toLazyByteString $
-            SQL.expr absurd e
-        , compile_output = "SELECT expense.cost_dollars FROM ((SELECT * FROM Expenses)) AS expense"
+          \env e ->
+            Lazy.toStrict . Builder.toLazyByteString . SQL.compileQuery <$>
+            SQL.query env absurd e
+        , compile_output = "SELECT expense.cost_dollars FROM (SELECT * FROM Expenses) AS expense"
         }
       it "2" $
         compileTest $
@@ -261,10 +263,10 @@ main =
               TQuery anyTypeInfo (TMany anyTypeInfo $ TName anyTypeInfo "AUD")
         , compile_normalise = normaliseExpr
         , compile_gen =
-          \_ e ->
-            Lazy.toStrict . Builder.toLazyByteString $
-            SQL.expr absurd e
-        , compile_output = "SELECT expense.cost_dollars, expense.cost_cents FROM ((SELECT * FROM Expenses)) AS expense"
+          \env e ->
+            Lazy.toStrict . Builder.toLazyByteString . SQL.compileQuery <$>
+            SQL.query env absurd e
+        , compile_output = "SELECT expense.cost_dollars, expense.cost_cents FROM (SELECT * FROM Expenses) AS expense"
         }
     describe "parse" $ do
       it "1" $
