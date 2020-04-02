@@ -1,16 +1,24 @@
 {-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language ViewPatterns #-}
-module Quill.SQL where
+module Quill.SQL
+  ( Expr(..)
+  , Query(..)
+  , expr
+  , query
+  , CompileError(..)
+  , compileExpr
+  , compileQuery
+  , compileTable
+  )
+where
 
 import qualified Bound
 import Bound.Var (unvar)
-import Control.Lens.Cons (_Cons, _last)
+import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
-import Control.Lens.Setter (over)
-import Control.Monad (join)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Lazy as Lazy
+import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Builder as Builder
 import Data.Foldable (fold)
 import Data.List (intersperse)
@@ -25,6 +33,10 @@ import Quill.Check (Info(..), QueryEnv, TypeInfo(..), resolveType)
 import qualified Quill.Check as Check
 import Quill.Syntax (TableItem, Type)
 import qualified Quill.Syntax as Syntax
+
+data CompileError
+  = ExpectedQuery (Syntax.Expr Info String)
+  deriving (Show)
 
 columnType :: QueryEnv Void -> Type TypeInfo -> ByteString
 columnType env ty =
@@ -41,13 +53,12 @@ columnType env ty =
         Right ty' -> columnType env ty'
     Syntax.TInt _ -> "int NOT NULL"
 
-createTable ::
+compileTable ::
   QueryEnv Void ->
   Text ->
   Vector (TableItem TypeInfo) ->
-  Lazy.ByteString
-createTable env tableName items =
-  Builder.toLazyByteString $
+  Builder.Builder
+compileTable env tableName items =
   "CREATE TABLE " <> Builder.byteString (encodeUtf8 tableName) <> "(\n" <>
   foldMap
     (\colName ->
@@ -69,7 +80,7 @@ createTable env tableName items =
      (\(n, args) ->
         Builder.byteString (encodeUtf8 n) <> "(" <>
         fold
-          (intersperse "," $
+          (intersperse ", " $
            foldr
              ((:) . Builder.byteString . encodeUtf8)
              []
@@ -126,7 +137,7 @@ data Expr
   | Null
   | Var Text
   | Project Expr Text
-  | Row Expr (Vector Expr)
+  | Row (Vector (Text, Expr))
   | List (Vector Expr)
   | Int Int
   | Bool Bool
@@ -134,6 +145,35 @@ data Expr
   | Or Expr Expr
   | Eq Expr Expr
   | Not Expr
+
+compileExpr :: Expr -> Builder.Builder
+compileExpr e =
+  case e of
+    Subquery q -> compileQuery q
+    Int n -> Builder.byteString . Char8.pack $ show n
+    Bool b -> if b then "true" else "false"
+    And a b -> compileExpr a <> " AND " <> compileExpr b
+    Or a b -> compileExpr a <> " OR " <> compileExpr b
+    Eq a b -> compileExpr a <> " = " <> compileExpr b
+    Not a -> "NOT " <> compileExpr a
+    Null -> "null"
+    Var n -> Builder.byteString $ encodeUtf8 n
+    Project value field -> compileExpr value <> "." <> Builder.byteString (encodeUtf8 field)
+    Row values ->
+      fold . intersperse ", " $
+      foldr ((:) . compileExpr . snd) [] values
+    List values ->
+      fold . intersperse ", " $
+      foldr
+        (\value ->
+           (:) $
+           (case value of
+             Row{} -> parens
+             _ -> id
+           ) (compileExpr value)
+        )
+        []
+        values
 
 data Selection
   = Star
@@ -155,17 +195,46 @@ data Query
       (Vector Expr) -- values
       Selection -- selection
 
+compileSelection :: Selection -> Builder.Builder
+compileSelection sel =
+  case sel of
+    Star -> "*"
+    Values v vs -> compileExpr v <> foldMap ((", " <>) . compileExpr) vs
+
+compileQuery :: Query -> Builder.Builder
+compileQuery q =
+  case q of
+    SelectFrom sel src m_alias m_cond ->
+      "SELECT " <> compileSelection sel <> " FROM " <>
+      (case src of
+         Subquery{} -> parens
+         _ -> id
+      ) (compileExpr src) <>
+      foldMap (\alias -> " AS " <> Builder.byteString (encodeUtf8 alias)) m_alias <>
+      foldMap (\cond -> " WHERE " <> compileExpr cond) m_cond
+    InsertInto table cols vals ->
+      "INSERT " <>
+      fold (intersperse ", " $ foldr ((:) . compileExpr) [] vals) <>
+      " INTO " <> Builder.byteString (encodeUtf8 table) <>
+      parens (fold . intersperse ", " $ foldr ((:) . Builder.byteString . encodeUtf8) [] cols)
+    InsertIntoReturning table cols vals sel ->
+      "INSERT " <>
+      fold (intersperse ", " $ foldr ((:) . compileExpr) [] vals) <>
+      " INTO " <> Builder.byteString (encodeUtf8 table) <>
+      parens (fold . intersperse ", " $ foldr ((:) . Builder.byteString . encodeUtf8) [] cols) <>
+      " RETURNING " <> compileSelection sel
+
 row ::
   Show a =>
   Check.DeclEnv ->
   (a -> Expr) ->
   Syntax.Expr Info a ->
-  Either () (Vector Expr)
+  Either CompileError (Vector Expr)
 row env f e = do
   e' <- expr env f e
   pure $
     case e' of
-      Row e es -> Vector.cons e es
+      Row es -> snd <$> es
       _ -> [e']
 
 query ::
@@ -173,7 +242,7 @@ query ::
   Check.DeclEnv ->
   (a -> Expr) ->
   Syntax.Expr Info a ->
-  Either () Query
+  Either CompileError Query
 query env f e =
   case e of
     Syntax.Info _ a -> query env f a
@@ -187,7 +256,7 @@ query env f e =
       pure $
         InsertIntoReturning
         table
-        (Check._tiFieldNames tableInfo >>= \(_, (f, fs)) -> Vector.cons f fs)
+        (Check._tiFieldNames tableInfo >>= \(_, fs) -> Check.flattenFieldNames fs)
         values
         Star
     Syntax.InsertInto value table -> do
@@ -198,7 +267,7 @@ query env f e =
       pure $
         InsertInto
         table
-        (Check._tiFieldNames tableInfo >>= \(_, (f, fs)) -> Vector.cons f fs)
+        (Check._tiFieldNames tableInfo >>= \(_, fs) -> Check.flattenFieldNames fs)
         values
     Syntax.Bind q' _ rest -> do
       q'' <- expr env f q'
@@ -206,6 +275,7 @@ query env f e =
         env
         (unvar (\() -> q'') f)
         (Syntax.fromScope2 rest)
+    Syntax.Return q' -> query env f q'
     Syntax.For n value m_cond yield -> do
       let f' = unvar (\() -> Var n) f
       value' <- expr env f value
@@ -220,20 +290,29 @@ query env f e =
              Syntax.Var (Bound.B ()) -> Star
              _ ->
                case yield' of
-                 Row v vs -> Values v vs
+                 Row vs ->
+                   case fmap snd vs ^? _Cons of
+                     Nothing -> Values Null []
+                     Just (vv, vvs) -> Values vv vvs
                  _ -> Values yield' []
           )
           value'
           (Just n)
           m_cond'
-    _ -> Left ()
+    _ -> Left $ ExpectedQuery $ show <$> e
+
+projectFieldNames :: Expr -> Check.FieldNames -> Expr
+projectFieldNames value fieldNames =
+  case fieldNames of
+    Check.Name n -> Project value n
+    Check.Names ns -> Row $ (fmap.fmap) (projectFieldNames value) ns
 
 expr ::
   Show a =>
   Check.DeclEnv ->
   (a -> Expr) ->
   Syntax.Expr Info a ->
-  Either () Expr
+  Either CompileError Expr
 expr env f e =
   case e of
     Syntax.Info _ a -> expr env f a
@@ -266,20 +345,19 @@ expr env f e =
                        Just tableInfo ->
                          case Vector.find ((field ==) . fst) (Check._tiFieldNames tableInfo) of
                            Nothing -> error $ "SQL.expr project - fieldNames not found"
-                           Just (_, (f, fs)) ->
-                             pure $
-                             if Vector.null fs
-                             then Project value' f
-                             else Row (Project value' f) ((value' `Project`) <$> fs)
-                  Check.Column -> _
+                           Just (_, fieldNames) ->
+                             pure $ projectFieldNames value' fieldNames
+                  Check.Column ->
+                    case value' of
+                      Row vs ->
+                        case Vector.find ((field ==) . fst) vs of
+                          Nothing ->
+                            error $ "SQL.expr project - invalid column projection (missing entry in row)"
+                          Just (_, e') -> pure e'
+                      _ -> error $ "SQL.expr project - invalid column projection"
                   _ -> error $ "SQL.expr project - invalid origin " <> show valueOrigin
     Syntax.Var n -> pure $ f n
-    Syntax.Record fields -> do
-      fields <- join <$> traverse (row env f . snd) fields
-      pure $
-        case fields ^? _Cons of
-          Nothing -> Null
-          Just (f, fs) -> Row f fs
+    Syntax.Record fields -> Row <$> (traverse.traverse) (expr env f) fields
     Syntax.Int n -> pure $ Int n
     Syntax.Bool b -> pure $ Bool b
     Syntax.IfThenElse a b c -> error "SQL.expr env ifthenelse" a b c

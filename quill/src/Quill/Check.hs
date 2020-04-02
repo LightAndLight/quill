@@ -9,6 +9,7 @@ module Quill.Check
   , TypeInfo(..)
   , Origin(..)
   , TableInfo(..)
+  , FieldNames(..), flattenFieldNames
   , QueryEnv(..)
   , mkTypeInfo
   , resolveType
@@ -29,7 +30,7 @@ import Bound.Scope (Scope(..))
 import Bound.Var (unvar)
 import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
-import Control.Monad (join, unless, when)
+import Control.Monad (unless, when)
 import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
 import Control.Monad.State (MonadState, evalStateT, gets, modify)
 import Data.Foldable (traverse_)
@@ -39,6 +40,8 @@ import Data.Maybe as Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text.Lazy as Lazy
+import qualified Data.Text.Lazy.Builder as Builder
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
@@ -60,9 +63,19 @@ data TypeError t
   | DuplicateRecordFields
   deriving (Eq, Show)
 
+data FieldNames
+  = Names (Vector (Text, FieldNames))
+  | Name Text
+
+flattenFieldNames :: FieldNames -> Vector Text
+flattenFieldNames f =
+  case f of
+    Name n -> [n]
+    Names fs' -> fs' >>= flattenFieldNames . snd
+
 data TableInfo
   = TableInfo
-  { _tiFieldNames :: Vector (Text, (Text, Vector Text))
+  { _tiFieldNames :: Vector (Text, FieldNames)
   , _tiReadType :: Type TypeInfo
   , _tiWriteType :: Type TypeInfo
   }
@@ -841,14 +854,7 @@ mkTableInfo ::
 mkTableInfo env table items = do
   readFields <- mkReadFields
   writeFields <- mkWriteFields readFields
-  fieldNames <-
-    Vector.mapMaybe
-      (\(k, entry) -> do
-         case entry ^? _Cons of
-           Nothing -> Nothing
-           Just (f, fs) -> Just (k, (f, fs))
-      ) <$>
-    traverse (\(k, v) -> (,) k <$> mkFieldName k v) readFields
+  fieldNames <- mkFieldNames readFields
   let info = TypeInfo { _typeInfoOrigin = Just $ Row table }
   pure $
     TableInfo
@@ -857,16 +863,21 @@ mkTableInfo env table items = do
     , _tiWriteType = Syntax.TRecord info writeFields
     }
   where
-    mkFieldName ::
-      Text ->
-      Type TypeInfo ->
-      m (Vector Text) -- a single quill column name can map to multiple SQL column names
-    mkFieldName k ty =
-      case ty of
-        Syntax.TRecord _ fields ->
-          fmap ((<>) k "_" <>) . join <$>
-          traverse (uncurry mkFieldName) fields
-        _ -> pure [k]
+    mkFieldNames ::
+      Vector (Text, Type TypeInfo) ->
+      m (Vector (Text, FieldNames))
+    mkFieldNames = traverse (\(f, v) -> (,) f <$> go (Builder.fromText f) v)
+      where
+        go ::
+          Builder.Builder ->
+          Type TypeInfo ->
+          m FieldNames
+        go n ty =
+          case ty of
+            Syntax.TRecord _ ns' ->
+              Names <$> traverse (\(f, v) -> (,) f <$> go (n <> "_" <> Builder.fromText f) v) ns'
+            _ ->
+              pure . Name . Lazy.toStrict $ Builder.toLazyText n
 
     unaryConstraints =
       Vector.foldr
