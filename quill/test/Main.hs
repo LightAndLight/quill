@@ -23,7 +23,7 @@ import Quill.Check
 import qualified Quill.Check as Check
 import Quill.Normalise (normaliseExpr)
 import Quill.Parser (Parser, eof, parseString, decls, expr, query)
-import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
+import Quill.Syntax (Constraint(..), Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import qualified Quill.SQL as SQL
 import Test.Hspec (describe, expectationFailure, hspec, it, shouldBe)
@@ -294,6 +294,31 @@ main =
         , compile_output =
           "CREATE TABLE Expenses(\nid int NOT NULL,\ncost_dollars int NOT NULL,\ncost_cents int NOT NULL\n);"
         }
+      it "4" $
+        compileTest $
+        CompileTest
+        { compile_prelude =
+            [ "type AUD = { dollars : Int, cents : Int };" ]
+        , compile_parsePrelude = decls
+        , compile_checkPrelude =
+            Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        , compile_item =
+            [ "table Expenses {"
+            , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+            , "  cost : AUD"
+            , "}"
+            ]
+        , compile_parseItem = decls
+        , compile_checkItem =
+          \(_, env) -> Check.checkDecls env . fromList
+        , compile_normalise = id
+        , compile_gen =
+            \_ (e, env) ->
+              Right @SQL.CompileError . Lazy.toStrict . Builder.toLazyByteString $
+              SQL.compileDecls env e
+        , compile_output =
+          "CREATE TABLE Expenses(\nid int NOT NULL PRIMARY KEY AUTO_INCREMENT,\ncost_dollars int NOT NULL,\ncost_cents int NOT NULL\n);"
+        }
     describe "parse" $ do
       it "1" $
         parseTest $
@@ -320,8 +345,8 @@ main =
         , parse_output =
           [ Table "Expenses"
             [ Field "id" $ TInt ()
-            , Constraint "PK" ["id"]
-            , Constraint "AUTO_INCREMENT" ["id"]
+            , Constraint PrimaryKey ["id"]
+            , Constraint AutoIncrement ["id"]
             , Field "name" $ TName () "Text"
             , Field "cost" $ TName () "AUD"
             ]

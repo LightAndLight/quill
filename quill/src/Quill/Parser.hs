@@ -1,3 +1,4 @@
+{-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language RankNTypes #-}
 module Quill.Parser
@@ -17,7 +18,7 @@ import qualified Bound
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Vector as Vector
-import Quill.Syntax (Decl(..), Expr(..), TableItem(..), Type(..))
+import Quill.Syntax (Constraint(..), Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Text.Trifecta hiding (parseString, eof)
 import qualified Text.Trifecta as Trifecta
@@ -242,9 +243,16 @@ decl =
   queryDecl <|>
   fnDecl
   where
+    constraint =
+      (\case
+          "PK" -> PrimaryKey
+          "AUTO_INCREMENT" -> AutoIncrement
+          ctor -> Other ctor
+      ) <$>
+      constructor
     tableItem =
       Field <$> variable <* symbolic ':' <*> type_ <|>
-      Constraint <$> constructor <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
+      Constraint <$> constraint <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
     table =
       Table <$ reserved "table" <*>
       constructor <*>

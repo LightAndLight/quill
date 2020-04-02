@@ -694,9 +694,9 @@ checkTableItem env item =
           modify $ \s -> s { fieldsSeen = Map.insert name ty (fieldsSeen s) }
           pure $ Syntax.Field name ty'
         Just{} -> throwError $ FieldAlreadyDefined name
-    Syntax.Constraint name args ->
-      case name of
-        "AUTO_INCREMENT" -> do
+    Syntax.Constraint constr args ->
+      case constr of
+        Syntax.AutoIncrement -> do
           let argsLength = Vector.length args
           unless (argsLength == 1) . throwError $ ConstraintArgsMismatch 1 argsLength
           let arg = args Vector.! 0
@@ -704,13 +704,13 @@ checkTableItem env item =
             maybe (throwError $ FieldNotInScope arg) pure =<<
             gets (Map.lookup arg . fieldsSeen)
           unless (isEnumerable $ () <$ argTy) . throwError $ NotEnumerable argTy
-          pure $ Syntax.Constraint name args
-        "PK" -> do
+          pure $ Syntax.Constraint Syntax.AutoIncrement args
+        Syntax.PrimaryKey -> do
           b <- gets hasPrimaryKey
           when b . throwError $ MultiplePrimaryKeys
           modify $ \s -> s { hasPrimaryKey = True }
-          pure $ Syntax.Constraint name args
-        _ -> throwError $ UnknownConstraint name
+          pure $ Syntax.Constraint Syntax.PrimaryKey args
+        Syntax.Other name -> throwError $ UnknownConstraint name
 
 checkDeclArg ::
   ( MonadError (DeclError t t') m
@@ -895,13 +895,14 @@ mkTableInfo env table items = do
     unaryConstraints =
       Vector.foldr
         (\case
-          Syntax.Constraint n args
-            | Vector.length args == 1 ->
-                Map.insertWith
-                  (<>)
-                  (args Vector.! 0)
-                  (Set.singleton n)
-          _ -> id
+           Syntax.Constraint constr args
+             | Vector.length args == 1 ->
+                 Map.insertWith
+                   (<>)
+                   (args Vector.! 0)
+                   (Set.singleton constr)
+             | otherwise -> id
+           _ -> id
         )
         mempty
         items
@@ -919,7 +920,7 @@ mkTableInfo env table items = do
            case Map.lookup n unaryConstraints of
              Nothing -> (,) n <$> mkTypeInfo env (Just Column) ty
              Just cs ->
-               if "AUTO_INCREMENT" `Set.member` cs
+               if Syntax.AutoIncrement `Set.member` cs
                then
                  (,) n . Syntax.TOptional ((Syntax.getTypeAnn ty) { _typeInfoOrigin = Just Column }) <$>
                  mkTypeInfo env Nothing ty
