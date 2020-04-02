@@ -10,6 +10,7 @@ module Quill.SQL
   , compileExpr
   , compileQuery
   , compileTable
+  , compileDecls
   )
 where
 
@@ -17,7 +18,6 @@ import qualified Bound
 import Bound.Var (unvar)
 import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
-import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Builder as Builder
 import Data.Foldable (fold)
@@ -28,8 +28,7 @@ import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import Data.Void (Void)
-import Quill.Check (Info(..), QueryEnv, TypeInfo(..), resolveType)
+import Quill.Check (Info(..), TypeInfo(..), resolveType')
 import qualified Quill.Check as Check
 import Quill.Syntax (TableItem, Type)
 import qualified Quill.Syntax as Syntax
@@ -38,43 +37,87 @@ data CompileError
   = ExpectedQuery (Syntax.Expr Info String)
   deriving (Show)
 
-columnType :: QueryEnv Void -> Type TypeInfo -> ByteString
-columnType env ty =
-  case ty of
-    Syntax.TRecord _ _ -> error "todo: records as column types"
-    Syntax.TUnit _ -> "blob NOT NULL"
-    Syntax.TBool _ -> "boolean NOT NULL"
+compileDecls ::
+  Check.DeclEnv ->
+  Vector (Syntax.Decl Info TypeInfo) ->
+  Builder.Builder
+compileDecls env ds =
+  fold . intersperse "\n\n" $
+  foldr
+    (\d ->
+      case d of
+        Syntax.Table name items -> (:) $ compileTable env name items
+        Syntax.Type{} -> id
+        Syntax.Query{} -> error "TODO: compile query"
+        Syntax.Function{} -> error "TODO: compile function"
+    )
+    []
+    ds
+
+compileColumn ::
+  Check.DeclEnv ->
+  Check.TableInfo ->
+  Text ->
+  Type TypeInfo ->
+  [Text] ->
+  Builder.Builder
+compileColumn env tableInfo colName colTy cons =
+  let
+    colName' = Builder.byteString $ encodeUtf8 colName
+    cons' =
+      if null cons
+      then mempty
+      else
+        (" " <>) . fold . intersperse " " $
+        foldr ((:) . Builder.byteString . encodeUtf8) [] cons
+    withNameAndCons x = colName' <> " " <> x <> cons'
+  in
+  case colTy of
+    Syntax.TRecord _ _ ->
+      let
+        m_colInfo =
+          Check.flattenColumnInfo . snd <$>
+          Vector.find ((colName ==) . fst) (Check._tiColumnInfo tableInfo)
+       in
+        case m_colInfo of
+          Nothing -> error "column info not found"
+          Just colInfo ->
+            fold . intersperse ",\n" $
+            foldr
+              (\(n, ty) -> (:) $ compileColumn env tableInfo n ty cons)
+              []
+              colInfo
+    Syntax.TInt _ -> withNameAndCons "int NOT NULL"
+    Syntax.TUnit _ -> withNameAndCons "blob NOT NULL"
+    Syntax.TBool _ -> withNameAndCons "boolean NOT NULL"
     Syntax.TMany _ _ -> error "todo: many as column types???"
     Syntax.TOptional _ _ -> error "todo: optional as column types???"
     Syntax.TQuery _ _ -> error "todo: query as column types???"
     Syntax.TName _ n ->
-      case resolveType env n of
+      case resolveType' env n of
         Left{} -> undefined
-        Right ty' -> columnType env ty'
-    Syntax.TInt _ -> "int NOT NULL"
+        Right ty' -> compileColumn env tableInfo colName ty' cons
+
 
 compileTable ::
-  QueryEnv Void ->
+  Check.DeclEnv ->
   Text ->
   Vector (TableItem TypeInfo) ->
   Builder.Builder
 compileTable env tableName items =
   "CREATE TABLE " <> Builder.byteString (encodeUtf8 tableName) <> "(\n" <>
-  foldMap
-    (\colName ->
-       case Map.lookup colName colInfos of
-         Nothing -> undefined
-         Just (ty, cons) ->
-           Builder.byteString (encodeUtf8 colName) <>
-           " " <>
-           Builder.byteString (columnType env ty) <>
-           " " <>
-           fold
-             (intersperse " " $
-              Builder.byteString . encodeUtf8 <$> cons
-             )
-    )
-    colNames <>
+  fold
+    (intersperse ",\n" $
+     (\colName ->
+        case Map.lookup colName colInfos of
+          Nothing -> undefined
+          Just (ty, cons) ->
+            case Map.lookup tableName (Check._deTables env) of
+              Nothing -> undefined
+              Just tableInfo -> compileColumn env tableInfo colName ty cons
+     ) <$>
+     colNames
+  ) <>
   fold
     (intersperse ",\n" $
      (\(n, args) ->
@@ -89,7 +132,7 @@ compileTable env tableName items =
         ")"
      ) <$> constraints
     ) <>
-  "\n)"
+  "\n);"
   where
     (colNames, colInfos, constraints) = gatherConstraints items
 
@@ -256,7 +299,7 @@ query env f e =
       pure $
         InsertIntoReturning
         table
-        (Check._tiFieldNames tableInfo >>= \(_, fs) -> Check.flattenFieldNames fs)
+        (Check._tiColumnInfo tableInfo >>= fmap fst . Check.flattenColumnInfo . snd)
         values
         Star
     Syntax.InsertInto value table -> do
@@ -267,7 +310,7 @@ query env f e =
       pure $
         InsertInto
         table
-        (Check._tiFieldNames tableInfo >>= \(_, fs) -> Check.flattenFieldNames fs)
+        (Check._tiColumnInfo tableInfo >>= fmap fst . Check.flattenColumnInfo . snd)
         values
     Syntax.Bind q' _ rest -> do
       q'' <- expr env f q'
@@ -301,10 +344,10 @@ query env f e =
           m_cond'
     _ -> Left $ ExpectedQuery $ show <$> e
 
-projectFieldNames :: Expr -> Check.FieldNames -> Expr
-projectFieldNames value fieldNames =
-  case fieldNames of
-    Check.Name n -> Project value n
+projectFieldNames :: Expr -> Check.ColumnInfo -> Expr
+projectFieldNames value columnInfo =
+  case columnInfo of
+    Check.Name n _ -> Project value n
     Check.Names ns -> Row $ (fmap.fmap) (projectFieldNames value) ns
 
 expr ::
@@ -343,10 +386,10 @@ expr env f e =
                      case Map.lookup table (Check._deTables env) of
                        Nothing -> error $ "SQL.expr project - table not found"
                        Just tableInfo ->
-                         case Vector.find ((field ==) . fst) (Check._tiFieldNames tableInfo) of
-                           Nothing -> error $ "SQL.expr project - fieldNames not found"
-                           Just (_, fieldNames) ->
-                             pure $ projectFieldNames value' fieldNames
+                         case Vector.find ((field ==) . fst) (Check._tiColumnInfo tableInfo) of
+                           Nothing -> error $ "SQL.expr project - columnInfo not found"
+                           Just (_, columnInfo) ->
+                             pure $ projectFieldNames value' columnInfo
                   Check.Column ->
                     case value' of
                       Row vs ->

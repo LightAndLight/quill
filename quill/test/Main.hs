@@ -1,5 +1,6 @@
-{-# language OverloadedLists, OverloadedStrings #-}
 {-# language GADTs #-}
+{-# language OverloadedLists, OverloadedStrings #-}
+{-# language TypeApplications #-}
 module Main where
 
 import Prelude hiding (Ordering(..))
@@ -202,7 +203,7 @@ main =
             ]
         , compile_parseItem = query (const Nothing)
         , compile_checkItem =
-          \env e ->
+          \(_, env) e ->
             let
               queryEnv =
                 QueryEnv
@@ -219,7 +220,7 @@ main =
               TQuery anyTypeInfo (TMany anyTypeInfo $ TInt anyTypeInfo)
         , compile_normalise = normaliseExpr
         , compile_gen =
-          \env e ->
+          \(_, env) e ->
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileQuery <$>
             SQL.query env absurd e
         , compile_output = "SELECT expense.cost_dollars FROM (SELECT * FROM Expenses) AS expense"
@@ -246,7 +247,7 @@ main =
             ]
         , compile_parseItem = query (const Nothing)
         , compile_checkItem =
-          \env e ->
+          \(_, env) e ->
             let
               queryEnv =
                 QueryEnv
@@ -263,10 +264,35 @@ main =
               TQuery anyTypeInfo (TMany anyTypeInfo $ TName anyTypeInfo "AUD")
         , compile_normalise = normaliseExpr
         , compile_gen =
-          \env e ->
+          \(_, env) e ->
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileQuery <$>
             SQL.query env absurd e
         , compile_output = "SELECT expense.cost_dollars, expense.cost_cents FROM (SELECT * FROM Expenses) AS expense"
+        }
+      it "3" $
+        compileTest $
+        CompileTest
+        { compile_prelude =
+            [ "type AUD = { dollars : Int, cents : Int };" ]
+        , compile_parsePrelude = decls
+        , compile_checkPrelude =
+            Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        , compile_item =
+            [ "table Expenses {"
+            , "  id : Int,"
+            , "  cost : AUD"
+            , "}"
+            ]
+        , compile_parseItem = decls
+        , compile_checkItem =
+          \(_, env) -> Check.checkDecls env . fromList
+        , compile_normalise = id
+        , compile_gen =
+            \_ (e, env) ->
+              Right @SQL.CompileError . Lazy.toStrict . Builder.toLazyByteString $
+              SQL.compileDecls env e
+        , compile_output =
+          "CREATE TABLE Expenses(\nid int NOT NULL,\ncost_dollars int NOT NULL,\ncost_cents int NOT NULL\n);"
         }
     describe "parse" $ do
       it "1" $
