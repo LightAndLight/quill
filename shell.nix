@@ -2,6 +2,7 @@
 pkgs.mkShell {
   buildInputs = [
     pkgs.zlib.dev
+    pkgs.postgresql
   ];
   shellHook =
     ''

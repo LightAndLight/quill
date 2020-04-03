@@ -1,3 +1,4 @@
+{-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language ScopedTypeVariables #-}
 module Quill.Marshall
@@ -5,9 +6,13 @@ module Quill.Marshall
   , toExpr
   , Marshall(..)
   , fromValue
+  , parseValue
   )
 where
 
+import Control.Applicative ((<|>))
+import qualified Data.Attoparsec.ByteString.Char8 as Atto
+import Data.ByteString (ByteString)
 import Data.Foldable (foldrM)
 import Data.Proxy (Proxy(..))
 import qualified Data.Vector as Vector
@@ -21,6 +26,23 @@ class Marshall a where
   typeOf :: Proxy a -> Type ()
   toValue :: a -> Value
   fromValueUnchecked :: Value -> Maybe a
+
+parseValue :: Type t -> ByteString -> Either String Value
+parseValue = Atto.parseOnly . value id
+  where
+    value f ty =
+      case ty of
+        Syntax.TBool _ -> f <$> bool
+        Syntax.TInt _ -> f <$> int
+        Syntax.TOptional _ ty' ->
+          value (Some . f) ty' <|>
+          None <$ Atto.string "null"
+        _ -> error $ "todo: support all types"
+    bool =
+      Bool True <$ Atto.string "true" <|>
+      Bool False <$ Atto.string "false"
+    int =
+      Int <$> Atto.signed Atto.decimal
 
 fromValue ::
   forall a t.

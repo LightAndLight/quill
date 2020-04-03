@@ -8,7 +8,9 @@ module Quill.Parser
   , type_
   , decl
   , decls
+  , language
   , parseString
+  , parseFile
   )
 where
 
@@ -18,7 +20,7 @@ import qualified Bound
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Vector as Vector
-import Quill.Syntax (Constraint(..), Decl(..), Expr(..), TableItem(..), Type(..))
+import Quill.Syntax (Constraint(..), Decl(..), Expr(..), Language(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Text.Trifecta hiding (parseString, eof)
 import qualified Text.Trifecta as Trifecta
@@ -291,8 +293,22 @@ decl =
 decls :: (Monad m, TokenParsing m) => m [Decl () ()]
 decls = some decl <* eof
 
+language :: (Monad m, TokenParsing m) => m Language
+language =
+  symbol "#language" *> (Postgresql <$ symbol "postgresql" <|> SQL2003 <$ symbol "SQL2003") <|>
+  pure SQL2003
+
 parseString :: Parser a -> String -> Either String a
 parseString m str =
   case Trifecta.parseString m mempty str of
     Failure e -> Left . show $ _errDoc e
     Success a -> pure a
+
+parseFile :: Parser a -> FilePath -> IO (Either String a)
+parseFile m path =
+  (\res ->
+     case res of
+       Failure e -> Left . show $ _errDoc e
+       Success a -> pure a
+  ) <$>
+  Trifecta.parseFromFileEx m path

@@ -7,6 +7,7 @@
 module Quill.Check
   ( Info(..)
   , TypeInfo(..)
+  , anyTypeInfo
   , Origin(..)
   , TableInfo(..)
   , ColumnInfo(..), flattenColumnInfo
@@ -18,8 +19,10 @@ module Quill.Check
   , TypeError(..)
   , checkExpr
   , inferExpr
+  , QueryEntry(..)
   , DeclEnv(..)
   , emptyDeclEnv
+  , toQueryEnv
   , DeclError(..)
   , checkDecl
   , checkDecls
@@ -33,7 +36,7 @@ import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
 import Control.Monad (unless, when)
 import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
-import Control.Monad.State (MonadState, evalStateT, runStateT, get, gets, modify, put)
+import Control.Monad.State (MonadState, StateT, evalStateT, runStateT, get, gets, modify, put)
 import Data.Foldable (traverse_)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -48,6 +51,20 @@ import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
 import Quill.Syntax (Decl, Expr, Language, TableItem, Type)
 import qualified Quill.Syntax as Syntax
+
+data TypeInfo
+  = TypeInfo
+  { _typeInfoOrigin :: Maybe Origin
+  } deriving (Eq, Show)
+
+consistentTypeInfo :: TypeInfo -> TypeInfo -> Bool
+consistentTypeInfo ti ti' =
+  case _typeInfoOrigin ti of
+    Nothing -> True
+    Just origin ->
+      case _typeInfoOrigin ti' of
+        Nothing -> True
+        Just origin' -> origin == origin'
 
 data TypeError t
   = ExpectedRecord (Type TypeInfo)
@@ -77,7 +94,8 @@ flattenColumnInfo f =
 
 data TableInfo
   = TableInfo
-  { _tiColumnInfo :: Vector (Text, ColumnInfo)
+  { _tiNumColumns :: Int
+  , _tiColumnInfo :: Vector (Text, ColumnInfo)
   , _tiReadType :: Type TypeInfo
   , _tiWriteType :: Type TypeInfo
   } deriving Show
@@ -88,7 +106,7 @@ data QueryEnv a
   , _qeNames :: a -> Text
   , _qeLocals :: a -> Type TypeInfo
   , _qeGlobalVars :: Map Text (Type TypeInfo)
-  , _qeGlobalQueries :: Map Text (Type TypeInfo)
+  , _qeGlobalQueries :: Map Text QueryEntry
   , _qeTypes :: Map Text (Type TypeInfo)
   , _qeTables :: Map Text TableInfo
   }
@@ -98,20 +116,6 @@ data Origin
   | Row Text
   | Column
   deriving (Eq, Show)
-
-data TypeInfo
-  = TypeInfo
-  { _typeInfoOrigin :: Maybe Origin
-  } deriving (Eq, Show)
-
-consistentTypeInfo :: TypeInfo -> TypeInfo -> Bool
-consistentTypeInfo ti ti' =
-  case _typeInfoOrigin ti of
-    Nothing -> True
-    Just origin ->
-      case _typeInfoOrigin ti' of
-        Nothing -> True
-        Just origin' -> origin == origin'
 
 data Info
   = Info
@@ -621,13 +625,20 @@ inferExpr env expr =
       a' <- checkExpr env a $ Syntax.TBool anyTypeInfo
       pure (Syntax.NOT a', Syntax.TBool anyTypeInfo)
 
+data QueryEntry
+  = QueryEntry
+  { _qeArgTys :: Vector (Type TypeInfo)
+  , _qeRetTy :: Type TypeInfo
+  , _qeBody :: Scope Int (Expr Info) Void
+  } deriving Show
+
 data DeclEnv
   = DeclEnv
   { _deLanguage :: Language
   , _deTypes :: Map Text (Type TypeInfo)
   , _deTables :: Map Text TableInfo
   , _deGlobalVars :: Map Text (Type TypeInfo)
-  , _deGlobalQueries :: Map Text (Type TypeInfo)
+  , _deGlobalQueries :: Map Text QueryEntry
   } deriving Show
 
 emptyDeclEnv :: Language -> DeclEnv
@@ -638,6 +649,18 @@ emptyDeclEnv l =
   , _deTables = mempty
   , _deGlobalVars = mempty
   , _deGlobalQueries = mempty
+  }
+
+toQueryEnv :: DeclEnv -> QueryEnv Void
+toQueryEnv env =
+  QueryEnv
+  { _qeLanguage = _deLanguage env
+  , _qeNames = absurd
+  , _qeLocals = absurd
+  , _qeGlobalVars = _deGlobalVars env
+  , _qeGlobalQueries = _deGlobalQueries env
+  , _qeTypes = _deTypes env
+  , _qeTables = _deTables env
   }
 
 data DeclError t t'
@@ -773,9 +796,9 @@ checkDecl env decl =
           Syntax.Type name ty' <$ mapError TypeError (checkType ty')
         Just{} -> throwError $ TypeAlreadyDefined name
     Syntax.Query name args retTy body ->
-      case Map.lookup name (_deGlobalVars env <> _deGlobalQueries env) of
-        Just{} -> throwError $ VariableAlreadyDefined name
-        Nothing -> do
+      case Map.member name (_deGlobalVars env) || Map.member name (_deGlobalQueries env) of
+        True -> throwError $ VariableAlreadyDefined name
+        False -> do
           args' <- evalStateT (traverse (checkDeclArg env) args) mempty
           let
             queryEnv =
@@ -795,9 +818,9 @@ checkDecl env decl =
           body' <- mapError TypeError $ checkExpr queryEnv (Bound.fromScope body) retTy'
           pure $ Syntax.Query name args' retTy' (Bound.toScope body')
     Syntax.Function name args retTy body ->
-      case Map.lookup name (_deGlobalVars env <> _deGlobalQueries env) of
-        Just{} -> throwError $ VariableAlreadyDefined name
-        Nothing -> do
+      case Map.member name (_deGlobalVars env) || Map.member name (_deGlobalQueries env) of
+        True -> throwError $ VariableAlreadyDefined name
+        False -> do
           args' <- evalStateT (traverse (checkDeclArg env) args) mempty
           let
             queryEnv =
@@ -867,29 +890,31 @@ mkTableInfo ::
 mkTableInfo env table items = do
   readFields <- mkReadFields
   writeFields <- mkWriteFields readFields
-  columnInfo <- mkColumnInfo readFields
+  (columnInfo, numColumns) <- runStateT (mkColumnInfo readFields) 0
   let info = TypeInfo { _typeInfoOrigin = Just $ Row table }
   pure $
     TableInfo
-    { _tiColumnInfo = columnInfo
+    { _tiNumColumns = numColumns
+    , _tiColumnInfo = columnInfo
     , _tiReadType = Syntax.TRecord info readFields
     , _tiWriteType = Syntax.TRecord info writeFields
     }
   where
     mkColumnInfo ::
       Vector (Text, Type TypeInfo) ->
-      m (Vector (Text, ColumnInfo))
+      StateT Int m (Vector (Text, ColumnInfo))
     mkColumnInfo = traverse (\(f, v) -> (,) f <$> go (Builder.fromText f) v)
       where
         go ::
           Builder.Builder ->
           Type TypeInfo ->
-          m ColumnInfo
+          StateT Int m ColumnInfo
         go n ty =
           case ty of
             Syntax.TRecord _ ns' ->
               Names <$> traverse (\(f, v) -> (,) f <$> go (n <> "_" <> Builder.fromText f) v) ns'
-            _ ->
+            _ -> do
+              modify (+1)
               pure $ Name (Lazy.toStrict $ Builder.toLazyText n) ty
 
     unaryConstraints =
@@ -960,6 +985,11 @@ checkDecls e decls = runStateT (traverse go decls) e
               }
           items' <- mapError TypeError $ mkTableInfo env' name items
           put $ env { _deTables = Map.insert name items' (_deTables env) }
-        Syntax.Query name args retTy _ -> error "todo: add query to scope" name args retTy
+        Syntax.Query name args retTy body ->
+          put $
+          env
+          { _deGlobalQueries =
+            Map.insert name (QueryEntry (snd <$> args) retTy body) (_deGlobalQueries env)
+          }
         Syntax.Function name args retTy _ -> error "todo: add function to scope" name args retTy
       pure decl'

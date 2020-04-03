@@ -20,10 +20,12 @@ library
                      , Quill.Marshall
                      , Quill.Normalise
                      , Quill.Parser
+                     , Quill.Query
                      , Quill.SQL
                      , Quill.Syntax
   build-depends:       base ^>=4.12.0.0
                      , ansi-wl-pprint
+                     , attoparsec
                      , bifunctors
                      , bound
                      , bytestring
@@ -32,6 +34,7 @@ library
                      , lens
                      , mtl
                      , parsers
+                     , postgresql-libpq
                      , text
                      , transformers
                      , trifecta
@@ -49,6 +52,9 @@ executable quill
 test-suite quill-tests
   type:                exitcode-stdio-1.0
   main-is:             Main.hs
+  other-modules:       Test.Compile
+                     , Test.Check
+                     , Test.Parse
   build-depends:       base ^>=4.12.0.0
                      , quill
                      , bound
