@@ -5,6 +5,7 @@ module Quill.Query
   ( QueryEnv
   , load
   , query
+  , decodeRecord
   )
 where
 
@@ -47,7 +48,7 @@ data QueryException
   | UnknownError
   | TooManyRows Postgres.Row (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Postgres.Column (Syntax.Type Check.TypeInfo)
-  | DecodeError String
+  | DecodeError ByteString String
   deriving (Typeable, Show)
 instance Exception QueryException
 
@@ -67,7 +68,7 @@ load path = do
 decodeValue ::
   Postgres.Result ->
   Postgres.Row ->
-  Syntax.Type Check.TypeInfo ->
+  Syntax.Type t ->
   IO Value
 decodeValue res row ty = do
   m_val <- liftIO $ Postgres.getvalue' res row 0
@@ -75,29 +76,32 @@ decodeValue res row ty = do
     Nothing ->
       error "impossible: getvalue' returned Nothing"
     Just val ->
-      either (liftIO . throw . DecodeError) pure $
+      either (liftIO . throw . DecodeError val) pure $
       Marshall.parseValue ty val
 
 decodeRecord ::
   Postgres.Result ->
   Postgres.Row ->
-  Vector (Text, Syntax.Type Check.TypeInfo) ->
+  Vector (Text, Syntax.Type t) ->
   IO Value
 decodeRecord res row a = evalStateT (go a) 0
   where
-    goType :: Syntax.Type Check.TypeInfo -> StateT Postgres.Column IO Value
-    goType ty = do
-      col <- get
-      m_val <- liftIO $ Postgres.getvalue' res row col
-      put $ col + 1
-      case m_val of
-        Nothing ->
-          error "impossible: getvalue' returned Nothing"
-        Just val ->
-          either (liftIO . throw . DecodeError) pure $
-          Marshall.parseValue ty val
+    goType :: Syntax.Type t -> StateT Postgres.Column IO Value
+    goType ty =
+      case ty of
+        Syntax.TRecord _ fields -> go fields
+        _ -> do
+          col <- get
+          m_val <- liftIO $ Postgres.getvalue' res row col
+          put $ col + 1
+          case m_val of
+            Nothing ->
+              error "impossible: getvalue' returned Nothing"
+            Just val ->
+              either (liftIO . throw . DecodeError val) pure $
+              Marshall.parseValue ty val
 
-    go :: Vector (Text, Syntax.Type Check.TypeInfo) -> StateT Postgres.Column IO Value
+    go :: Vector (Text, Syntax.Type t) -> StateT Postgres.Column IO Value
     go fields =
       Normalise.Record <$> traverse (\(n, t) -> (,) n <$> goType t) fields
 
