@@ -8,6 +8,7 @@ import Test.Hspec
 import Test.Compile (compileTests)
 import Test.Check (convertTests, checkTests, doesn'tCheckTests)
 import Test.Parse (parseTests)
+import Test.Query (queryTests)
 
 main :: IO ()
 main =
@@ -17,3 +18,4 @@ main =
     describe "convert" convertTests
     describe "check" checkTests
     describe "doesn't check" doesn'tCheckTests
+    queryTests
