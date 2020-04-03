@@ -55,11 +55,13 @@ test-suite quill-tests
   other-modules:       Test.Compile
                      , Test.Check
                      , Test.Parse
+                     , Test.Query
   build-depends:       base ^>=4.12.0.0
                      , quill
                      , bound
                      , bytestring >= 0.10
                      , hspec
+                     , postgresql-libpq
                      , text
   hs-source-dirs:      test
   default-language:    Haskell2010
