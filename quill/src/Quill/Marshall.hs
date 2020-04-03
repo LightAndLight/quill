@@ -10,7 +10,7 @@ module Quill.Marshall
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative ((<|>), optional)
 import qualified Data.Attoparsec.ByteString.Char8 as Atto
 import Data.ByteString (ByteString)
 import Data.Foldable (foldrM)
@@ -39,8 +39,8 @@ parseValue = Atto.parseOnly . value id
           None <$ Atto.string "null"
         _ -> error $ "todo: support all types"
     bool =
-      Bool True <$ Atto.string "true" <|>
-      Bool False <$ Atto.string "false"
+      Bool True <$ Atto.string "t" <* optional (Atto.string "rue")<|>
+      Bool False <$ Atto.string "f" <* optional (Atto.string "alse")
     int =
       Int <$> Atto.signed Atto.decimal
 

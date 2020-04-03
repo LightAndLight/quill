@@ -19,7 +19,7 @@ data Value
   | Many (Vector Value)
   | Some Value
   | None
-  deriving Eq
+  deriving (Eq, Show)
 
 toExpr :: Value -> Expr t a
 toExpr value =
