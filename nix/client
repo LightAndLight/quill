@@ -9,6 +9,7 @@ client_pid=$PPID
 start_postgres() {
     if postgres_is_stopped
     then
+        echo "Starting postgres..."
         logfile="$PWD/log/pg.log"
         mkdir -p "$PGHOST" "${logfile%/*}"
         (set -m
