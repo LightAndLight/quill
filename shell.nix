@@ -5,6 +5,7 @@ pkgs.mkShell {
     pkgs.postgresql
   ];
   shellHook = ''
+    PATH=~/.cabal/bin:$PATH
     LD_LIBRARY_PATH=${pkgs.zlib}/lib:$LD_LIBRARY_PATH
 
     export LANG=en_US.UTF-8 \
