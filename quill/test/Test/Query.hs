@@ -304,7 +304,11 @@ queryTests = do
         , compile_parseItem = Parser.query (const Nothing)
         , compile_checkItem =
             \(_, env) e ->
-              Check.checkExpr (Check.toQueryEnv env) e (TQuery Check.anyTypeInfo $ TUnit Check.anyTypeInfo)
+              fmap fst $
+              Check.checkExpr
+                (Check.toQueryEnv env)
+                e
+                (TQuery Check.anyTypeInfo $ TUnit Check.anyTypeInfo)
         , compile_normalise = Normalise.normaliseExpr
         , compile_gen =
           \(_, env) e ->
@@ -369,6 +373,7 @@ queryTests = do
         , compile_parseItem = Parser.query (const Nothing)
         , compile_checkItem =
             \(_, env) e ->
+              fmap fst $
               Check.checkExpr
                 (Check.toQueryEnv env)
                 e
@@ -402,3 +407,46 @@ queryTests = do
         (`shouldBe` Just "33") <$> Postgres.getvalue' res 0 2
         (`shouldBe` Just "f") <$> Postgres.getvalue' res 0 3
       pure ()
+  around setupDbQuery . describe "query API" $ do
+    it "1" $ \conn -> do
+      qe <-
+        Query.loadString $
+        unlines
+        [ "type AUD = { dollars : Int, cents : Int };"
+        , ""
+        , "table Expenses {"
+        , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+        , "  cost : AUD,"
+        , "  is_food : Bool"
+        , "}"
+        , ""
+        , "query insertExpense(cost: AUD, is_food: Bool) -> Query Unit {"
+        , "  insert { cost: cost, is_food: is_food } into Expenses"
+        , "}"
+        , ""
+        , "query selectExpenses() -> Query (Many { id : Int, cost : AUD, is_food : Bool }) {"
+        , "  select from Expenses"
+        , "}"
+        ]
+      Query.createTable conn qe "Expenses"
+      insertRes <-
+        Query.query
+          conn
+          qe
+          "insertExpense"
+          [Record [("dollars", Int 10), ("cents", Int 99)], Bool False]
+      insertRes `shouldBe` Unit
+      selectRes <-
+        Query.query
+          conn
+          qe
+          "selectExpenses"
+          []
+      selectRes `shouldBe`
+        Many
+        [ Record
+          [ ("id", Int 1)
+          , ("cost", Record [("dollars", Int 10), ("cents", Int 99)])
+          , ("is_food", Bool False)
+          ]
+        ]

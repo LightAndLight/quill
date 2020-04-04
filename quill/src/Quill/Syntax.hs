@@ -160,6 +160,7 @@ data Expr t a
 
   | Int Int
 
+  | Unit
   | Bool Bool
   | IfThenElse (Expr t a) (Expr t a) (Expr t a)
 
@@ -204,6 +205,7 @@ instance Monad (Expr t) where
       Extend field value rest -> Extend field (value >>= f) (rest >>= f)
       Update field (n, func) rest -> Update field (n, substScope2 func f) (rest >>= f)
 
+      Unit -> Unit
       Int n -> Int n
 
       Bool b -> Bool b
@@ -346,6 +348,7 @@ prettyExpr f e =
       , prettyExpr f record
       ]
     Int n -> Pretty.text $ show n
+    Unit -> Pretty.text "Unit"
     Bool b -> Pretty.text $ show b
     IfThenElse a b c ->
       Pretty.hsep
