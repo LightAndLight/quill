@@ -53,17 +53,17 @@ fromValue ::
 fromValue env value = do
   let ty = typeOf (Proxy :: Proxy a)
   ty' <- mkTypeInfo env Nothing ty
-  value' <- checkExpr env (toExpr value) ty'
+  (value', _) <- checkExpr env (toExpr value) ty'
   case fromValueUnchecked =<< fromExpr value' of
     Just a -> pure a
     Nothing -> error "impossible"
 
 instance Marshall () where
-  typeOf _ = Syntax.TRecord () mempty
-  toValue () = Record mempty
+  typeOf _ = Syntax.TUnit ()
+  toValue () = Unit
   fromValueUnchecked value =
     case value of
-      Record [] -> Just ()
+      Unit -> Just ()
       _ -> Nothing
 
 instance Marshall a => Marshall [a] where

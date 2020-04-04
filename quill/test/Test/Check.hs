@@ -27,7 +27,7 @@ convertTest :: ConvertTest -> IO ()
 convertTest ct = do
   output <- either (error . show) pure $ do
     ty <- mkTypeInfo env Nothing (to ct)
-    checkExpr env (inputTerm ct) ty
+    fst <$> checkExpr env (inputTerm ct) ty
   let
     expected :: Expr () Text
     expected = bimap (\_ -> ()) absurd $ outputTerm ct

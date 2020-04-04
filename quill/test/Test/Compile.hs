@@ -102,7 +102,7 @@ compileTests = do
             , _qeTables = _deTables env
             }
         in
-          Check.checkExpr queryEnv e $
+          fmap fst . Check.checkExpr queryEnv e $
           TQuery anyTypeInfo (TMany anyTypeInfo $ TInt anyTypeInfo)
     , compile_normalise = normaliseExpr
     , compile_gen =
@@ -146,7 +146,7 @@ compileTests = do
             , _qeTables = _deTables env
             }
         in
-          Check.checkExpr queryEnv e $
+          fmap fst . Check.checkExpr queryEnv e $
           TQuery anyTypeInfo (TMany anyTypeInfo $ TName anyTypeInfo "AUD")
     , compile_normalise = normaliseExpr
     , compile_gen =

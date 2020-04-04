@@ -230,6 +230,9 @@ type_ =
       atom
 
     atom =
+      TBool () <$ symbol "Bool" <|>
+      TUnit () <$ symbol "Unit" <|>
+      TInt () <$ symbol "Int" <|>
       record <|>
       parens type_
 

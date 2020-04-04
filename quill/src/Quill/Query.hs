@@ -1,11 +1,14 @@
 {-# language DeriveDataTypeable #-}
-{-# language OverloadedLists #-}
+{-# language OverloadedLists, OverloadedStrings #-}
+{-# language TemplateHaskell #-}
 {-# language ViewPatterns #-}
 module Quill.Query
   ( QueryEnv
+  , createTable
   , load
   , query
   , decodeRecord
+  , loadString
   )
 where
 
@@ -15,11 +18,10 @@ import Control.Monad (when)
 import Control.Monad.State (StateT, evalStateT, get, put)
 import Control.Monad.IO.Class (liftIO)
 import Control.Lens.Indexed (itraverse)
-import Database.PostgreSQL.LibPQ (Connection)
-import qualified Database.PostgreSQL.LibPQ as Postgres
 import qualified Data.Map as Map
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
 import Data.Text (Text)
 import Data.Traversable (for)
@@ -27,6 +29,9 @@ import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
+import Database.PostgreSQL.LibPQ (Connection)
+import qualified Database.PostgreSQL.LibPQ as Postgres
+import Text.Show.Deriving (makeShow)
 
 import qualified Quill.Check as Check
 import Quill.Marshall (Value)
@@ -41,6 +46,7 @@ data QueryException
   = ParseError String
   | CheckError (Check.DeclError () ())
   | QueryNotFound Text
+  | TableNotFound Text
   | ArgumentMismatch Int Int
   | ArgumentCheckError Int (Check.TypeError Check.TypeInfo)
   | CompileError SQL.CompileError
@@ -49,10 +55,30 @@ data QueryException
   | TooManyRows Postgres.Row (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Postgres.Column (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
-  deriving (Typeable, Show)
+  deriving Typeable
+$(pure [])
+showQueryException :: QueryException -> String
+showQueryException = $(makeShow ''QueryException)
+instance Show QueryException where
+  show e =
+    case e of
+      ParseError s -> "ParseError:\n\n" <> s
+      DbError s -> "DbError:\n\n" <> Char8.unpack s
+      _ -> showQueryException e
 instance Exception QueryException
 
 newtype QueryEnv = QueryEnv Check.DeclEnv
+
+loadString :: String -> IO QueryEnv
+loadString file = do
+  let res = Parser.parseString ((,) <$> Parser.language <*> Parser.decls) file
+  (lang, decls) <- either (throw . ParseError) pure res
+  (_, declEnv) <-
+    either
+      (throw . CheckError)
+      pure
+      (Check.checkDecls (Check.emptyDeclEnv { Check._deLanguage = lang }) $ Vector.fromList decls)
+  pure . QueryEnv $ declEnv { Check._deLanguage = Just Syntax.Postgresql }
 
 load :: FilePath -> IO QueryEnv
 load path = do
@@ -63,7 +89,7 @@ load path = do
       (throw . CheckError)
       pure
       (Check.checkDecls (Check.emptyDeclEnv { Check._deLanguage = lang }) $ Vector.fromList decls)
-  pure $ QueryEnv declEnv
+  pure . QueryEnv $ declEnv { Check._deLanguage = Just Syntax.Postgresql }
 
 decodeValue ::
   Postgres.Result ->
@@ -120,7 +146,10 @@ query conn (QueryEnv env) name args = do
   let env' = Check.toQueryEnv env
   args' <-
     itraverse
-      (\i (v, t) -> either (throw . ArgumentCheckError i) pure $ Check.checkExpr env' (toExpr v) t)
+      (\i (v, t) ->
+         either (throw . ArgumentCheckError i) (pure . fst) $
+         Check.checkExpr env' (toExpr v) t
+      )
       (Vector.zip args argTys)
   q <-
     either (throw . CompileError) pure .
@@ -128,9 +157,7 @@ query conn (QueryEnv env) name args = do
     Normalise.normaliseExpr $
     Bound.instantiate (args' Vector.!) (Check._qeBody entry)
   let stmt = Lazy.toStrict . Builder.toLazyByteString $ SQL.compileQuery q
-  res <-
-    maybe (throw . maybe UnknownError DbError =<< Postgres.errorMessage conn) pure =<<
-    Postgres.exec conn stmt
+  res <- resultOk conn $ Postgres.exec conn stmt
   numRows <- Postgres.ntuples res
   numColumns <- Postgres.nfields res
   case retTy of
@@ -163,7 +190,38 @@ query conn (QueryEnv env) name args = do
           when (numColumns /= Postgres.toColumn lfields) . throw $
             ColumnMismatch lfields numColumns rowTy
           decodeRecord res 0 fields
+        Syntax.TUnit _ -> pure Normalise.Unit
         _ -> do
           when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
           decodeValue res 0 rowTy
     _ -> error "impossible: query doesn't have type TQuery"
+
+resultOk :: Connection -> IO (Maybe Postgres.Result) -> IO Postgres.Result
+resultOk conn m = do
+  m_res <- m
+  case m_res of
+    Nothing -> getErrMsg
+    Just res -> do
+      m_err <- Postgres.resultErrorMessage res
+      case m_err of
+        Just "" -> pure res
+        Just err -> throw $ DbError err
+        Nothing -> getErrMsg
+  where
+    getErrMsg =
+      maybe
+        (error "Unknown database failure")
+        (throw . DbError) =<<
+        Postgres.errorMessage conn
+
+createTable :: Connection -> QueryEnv -> Text -> IO ()
+createTable conn (QueryEnv env) table = do
+  tableInfo <-
+    maybe (throw $ TableNotFound table) pure $
+    Map.lookup table (Check._deTables env)
+  let
+    cmd =
+      Lazy.toStrict . Builder.toLazyByteString $
+      SQL.compileTable env table (Check._tiItems tableInfo)
+  _ <- resultOk conn $ Postgres.exec conn cmd
+  pure ()

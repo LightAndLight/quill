@@ -19,6 +19,7 @@ data Value
   | Many (Vector Value)
   | Some Value
   | None
+  | Unit
   deriving (Eq, Show)
 
 toExpr :: Value -> Expr t a
@@ -30,6 +31,7 @@ toExpr value =
     Many values -> Syntax.Many $ toExpr <$> values
     None -> Syntax.None
     Some a -> Syntax.Some (toExpr a)
+    Unit -> Syntax.Unit
 
 fromExpr :: Expr t a -> Maybe Value
 fromExpr value =
@@ -40,6 +42,7 @@ fromExpr value =
     Syntax.Many values -> Many <$> traverse fromExpr values
     Syntax.None -> Just None
     Syntax.Some a -> Some <$> fromExpr a
+    Syntax.Unit -> Just Unit
     _ -> Nothing
 
 structuralEq :: Expr t a -> Expr t a -> Maybe Bool
@@ -174,6 +177,7 @@ normaliseExpr e =
               case func'' of
                 Syntax.Var (Bound.B ()) -> record'
                 _ -> Syntax.Update field (n, func') (rewrap record')
+    Syntax.Unit -> e
     Syntax.Int{} -> e
     Syntax.Bool{} -> e
     Syntax.IfThenElse a b c ->
