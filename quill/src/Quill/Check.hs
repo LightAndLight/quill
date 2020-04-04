@@ -77,7 +77,7 @@ data TypeError t
   | TableNotInScope Text
   | VariableNotInScope Text
   | Can'tInferExpr (Expr t Text)
-  | LanguageMismatch Language Language
+  | LanguageMismatch Language (Maybe Language)
   | DuplicateRecordFields
   deriving (Eq, Show)
 
@@ -102,7 +102,7 @@ data TableInfo
 
 data QueryEnv a
   = QueryEnv
-  { _qeLanguage :: Language
+  { _qeLanguage :: Maybe Language
   , _qeNames :: a -> Text
   , _qeLocals :: a -> Type TypeInfo
   , _qeGlobalVars :: Map Text (Type TypeInfo)
@@ -312,7 +312,7 @@ convertExpr env expected actual =
 
 language :: MonadError (TypeError t) m => QueryEnv a -> Language -> m ()
 language env l =
-  unless (l == _qeLanguage env) . throwError $
+  unless (Just l == _qeLanguage env) . throwError $
   LanguageMismatch l (_qeLanguage env)
 
 checkType ::
@@ -634,17 +634,17 @@ data QueryEntry
 
 data DeclEnv
   = DeclEnv
-  { _deLanguage :: Language
+  { _deLanguage :: Maybe Language
   , _deTypes :: Map Text (Type TypeInfo)
   , _deTables :: Map Text TableInfo
   , _deGlobalVars :: Map Text (Type TypeInfo)
   , _deGlobalQueries :: Map Text QueryEntry
   } deriving Show
 
-emptyDeclEnv :: Language -> DeclEnv
-emptyDeclEnv l =
+emptyDeclEnv :: DeclEnv
+emptyDeclEnv =
   DeclEnv
-  { _deLanguage = l
+  { _deLanguage = Nothing
   , _deTypes = mempty
   , _deTables = mempty
   , _deGlobalVars = mempty

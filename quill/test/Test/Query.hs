@@ -8,13 +8,16 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
+import Data.Void (absurd)
 import qualified Database.PostgreSQL.LibPQ as Postgres
 import GHC.Exts (fromList)
+import GHC.Stack (HasCallStack)
 import System.Exit (exitFailure)
 import Test.Hspec
 
 import qualified Quill.Check as Check
 import Quill.Normalise (Value(..))
+import qualified Quill.Normalise as Normalise
 import Quill.Parser (Parser)
 import qualified Quill.Parser as Parser
 import Quill.Syntax (Type(..))
@@ -28,10 +31,27 @@ notError m =
   m >>= \m_res ->
   case m_res of
     Just "" -> pure ()
-    Just message -> do
-      Char8.putStr message
-      undefined
+    Just message -> expectationFailure $ Char8.unpack message
     Nothing -> pure ()
+
+resultOk :: Postgres.Connection -> IO (Maybe Postgres.Result) -> IO Postgres.Result
+resultOk conn m = do
+  m_res <- m
+  case m_res of
+    Nothing ->
+      maybe
+        (error "Unknown database failure")
+        ((*> error "Database error") . Char8.putStrLn) =<<
+        Postgres.errorMessage conn
+    Just res -> do
+      m_err <- Postgres.resultErrorMessage res
+      case m_err of
+        Just "" -> pure res
+        Just err -> do
+          Char8.putStrLn err
+          error "Database error"
+        Nothing ->
+          error "Database error"
 
 setupDb ::
   (Postgres.Connection -> IO ()) ->
@@ -99,15 +119,29 @@ setupDbDecode =
        pure ()
     )
 
-setupDbCreateTable :: (Postgres.Connection -> IO ()) -> IO ()
-setupDbCreateTable =
+setupDbBlank :: (Postgres.Connection -> IO ()) -> IO ()
+setupDbBlank =
   setupDb
     (\_ -> pure ())
     (\_ -> pure ())
 
+setupDbQuery :: (Postgres.Connection -> IO ()) -> IO ()
+setupDbQuery =
+  setupDb
+    (\_ -> pure ())
+    (\conn -> do
+       Postgres.exec conn "DROP TABLE Expenses;"
+       do
+         res <- resultOk conn $
+           Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+         m_value <- Postgres.getvalue' res 0 0
+         m_value `shouldBe` Just "0"
+       pure ()
+    )
+
 data Compile where
   Compile ::
-    (Show e, Show e', Show item', Show compileError) =>
+    (Show e, Show e', Show item, Show item', Show compileError) =>
     { compile_prelude :: [String]
     , compile_parsePrelude :: Parser prelude
     , compile_checkPrelude :: prelude -> Either e prelude'
@@ -119,7 +153,7 @@ data Compile where
     } ->
     Compile
 
-compile :: Compile -> IO ByteString
+compile :: HasCallStack => Compile -> IO ByteString
 compile
   (Compile
    { compile_prelude = prelude
@@ -144,9 +178,12 @@ compile
               case checkItem prelude' item of
                 Left err -> error $ show err
                 Right item' -> do
+                  -- print item'
                   case gen prelude' (normalise item') of
                     Left err -> error $ show err
-                    Right code -> pure code
+                    Right code -> do
+                      -- print code
+                      pure code
 
 queryTests :: Spec
 queryTests = do
@@ -169,7 +206,7 @@ queryTests = do
       one `shouldBe` Record [("a", Int 11), ("nest", Record [("b", Int 100), ("c", Bool True)])]
       two `shouldBe` Record [("a", Int 22), ("nest", Record [("b", Int 200), ("c", Bool False)])]
       three `shouldBe` Record [("a", Int 33), ("nest", Record [("b", Int 300), ("c", Bool True)])]
-  around setupDbCreateTable . describe "create table" $ do
+  around setupDbBlank . describe "create table" $ do
     it "1" $ \conn -> do
       query <-
         compile $
@@ -179,11 +216,12 @@ queryTests = do
           ]
         , compile_parsePrelude = Parser.decls
         , compile_checkPrelude =
-            Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+            Check.checkDecls Check.emptyDeclEnv . fromList
         , compile_item =
             [ "table Expenses {"
             , "  id : Int, PK(id), AUTO_INCREMENT(id),"
-            , "  cost : AUD"
+            , "  cost : AUD,"
+            , "  is_food : Bool"
             , "}"
             ]
         , compile_parseItem = Parser.decls
@@ -193,19 +231,95 @@ queryTests = do
           \_ (ds, env) ->
             Right @CompileError . Lazy.toStrict .
             Builder.toLazyByteString $
-            SQL.compileDecls env ds
+            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
         }
-      m_res <- Postgres.exec conn query
-      case m_res of
-        Nothing ->
-          maybe
-            (expectationFailure "Unknown database failure")
-            ((*> expectationFailure "Database error") . Char8.putStr) =<<
-            Postgres.errorMessage conn
-        Just res -> do
-          m_err <- Postgres.resultErrorMessage res
-          case m_err of
-            Just err -> do
-              Char8.putStr err
-              expectationFailure "Database error"
-            Nothing -> pure ()
+      resultOk conn $ Postgres.exec conn query
+      do
+        res <-
+          resultOk conn $
+          Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        m_value <- Postgres.getvalue' res 0 0
+        m_value `shouldBe` Just "1"
+      do
+        res <-
+          resultOk conn $
+          Postgres.exec conn "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'expenses';"
+        (`shouldBe` 4) =<< Postgres.ntuples res
+        (`shouldBe` Just "id") =<< Postgres.getvalue' res 0 0
+        (`shouldBe` Just "cost_dollars") =<< Postgres.getvalue' res 1 0
+        (`shouldBe` Just "cost_cents") =<< Postgres.getvalue' res 2 0
+        (`shouldBe` Just "is_food") =<< Postgres.getvalue' res 3 0
+      resultOk conn $ Postgres.exec conn "DROP TABLE Expenses;"
+      do
+        res <- resultOk conn $
+          Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        m_value <- Postgres.getvalue' res 0 0
+        m_value `shouldBe` Just "0"
+      pure ()
+  around setupDbQuery . describe "query" $ do
+    it "1" $ \conn -> do
+      create <-
+        compile $
+        Compile
+        { compile_prelude =
+          [ "type AUD = { dollars : Int, cents : Int };"
+          ]
+        , compile_parsePrelude = Parser.decls
+        , compile_checkPrelude =
+            Check.checkDecls Check.emptyDeclEnv . fromList
+        , compile_item =
+            [ "table Expenses {"
+            , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+            , "  cost : AUD,"
+            , "  is_food : Bool"
+            , "}"
+            ]
+        , compile_parseItem = Parser.decls
+        , compile_checkItem = \(_, env) -> Check.checkDecls env . fromList
+        , compile_normalise = id
+        , compile_gen =
+          \_ (ds, env) ->
+            Right @CompileError . Lazy.toStrict .
+            Builder.toLazyByteString $
+            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
+        }
+      resultOk conn $ Postgres.exec conn create
+      insert <-
+        compile $
+        Compile
+        { compile_prelude =
+            [ "type AUD = { dollars : Int, cents : Int };"
+            , "table Expenses {"
+            , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+            , "  cost : AUD,"
+            , "  is_food : Bool"
+            , "}"
+            ]
+        , compile_parsePrelude = Parser.decls
+        , compile_checkPrelude =
+            Check.checkDecls Check.emptyDeclEnv . fromList
+        , compile_item =
+            [ "insert { cost: { dollars: 2, cents: 3 }, is_food: True } into Expenses"
+            ]
+        , compile_parseItem = Parser.query (const Nothing)
+        , compile_checkItem =
+            \(_, env) e ->
+              Check.checkExpr (Check.toQueryEnv env) e (TQuery Check.anyTypeInfo $ TUnit Check.anyTypeInfo)
+        , compile_normalise = Normalise.normaliseExpr
+        , compile_gen =
+          \(_, env) e ->
+            Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
+            SQL.expr env absurd e
+        }
+      resultOk conn $ Postgres.exec conn insert
+      do
+        res <-
+          resultOk conn $
+          Postgres.exec conn "SELECT * FROM Expenses;"
+        (`shouldBe` 1) =<< Postgres.ntuples res
+        (`shouldBe` 4) =<< Postgres.nfields res
+        (`shouldBe` Just "1") <$> Postgres.getvalue' res 0 0
+        (`shouldBe` Just "2") <$> Postgres.getvalue' res 0 1
+        (`shouldBe` Just "3") <$> Postgres.getvalue' res 0 2
+        (`shouldBe` Just "t") <$> Postgres.getvalue' res 0 3
+      pure ()

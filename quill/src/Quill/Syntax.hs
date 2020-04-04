@@ -50,8 +50,7 @@ import Text.PrettyPrint.ANSI.Leijen (Doc)
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 
 data Language
-  = SQL2003
-  | Postgresql
+  = Postgresql
   deriving (Eq, Show)
 
 data Type t

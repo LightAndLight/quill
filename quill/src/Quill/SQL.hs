@@ -1,3 +1,4 @@
+{-# language BangPatterns #-}
 {-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language ViewPatterns #-}
@@ -25,6 +26,7 @@ import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
@@ -54,12 +56,22 @@ compileDecls env ds =
     []
     ds
 
+renderConstraint :: Maybe Syntax.Language -> Syntax.Constraint -> Maybe Text
+renderConstraint l c =
+  case c of
+    Syntax.AutoIncrement ->
+      case l of
+        Just Syntax.Postgresql -> Nothing
+        Nothing -> Just "AUTO_INCREMENT"
+    Syntax.PrimaryKey -> Just "PRIMARY KEY"
+    Syntax.Other t -> Just t
+
 compileColumn ::
   Check.DeclEnv ->
   Check.TableInfo ->
   Text ->
   Type TypeInfo ->
-  [Text] ->
+  [Syntax.Constraint] ->
   Builder.Builder
 compileColumn env tableInfo colName colTy cons =
   let
@@ -69,7 +81,14 @@ compileColumn env tableInfo colName colTy cons =
       then mempty
       else
         (" " <>) . fold . intersperse " " $
-        foldr ((:) . Builder.byteString . encodeUtf8) [] cons
+        foldr
+          (\c ->
+             case renderConstraint (Check._deLanguage env) c of
+               Nothing -> id
+               Just c' -> (:) (Builder.byteString $ encodeUtf8 c')
+          )
+          []
+          cons
     withNameAndCons x = colName' <> " " <> x <> cons'
   in
   case colTy of
@@ -87,7 +106,11 @@ compileColumn env tableInfo colName colTy cons =
               (\(n, ty) -> (:) $ compileColumn env tableInfo n ty cons)
               []
               colInfo
-    Syntax.TInt _ -> withNameAndCons "int NOT NULL"
+    Syntax.TInt _ ->
+      withNameAndCons $
+      case (Check._deLanguage env, Syntax.AutoIncrement `elem` cons) of
+        (Just Syntax.Postgresql, True) -> "serial"
+        _ -> "int NOT NULL"
     Syntax.TUnit _ -> withNameAndCons "blob NOT NULL"
     Syntax.TBool _ -> withNameAndCons "boolean NOT NULL"
     Syntax.TMany _ _ -> error "todo: many as column types???"
@@ -97,13 +120,6 @@ compileColumn env tableInfo colName colTy cons =
       case resolveType' env n of
         Left{} -> undefined
         Right ty' -> compileColumn env tableInfo colName ty' cons
-
-renderConstraint :: Syntax.Constraint -> Text
-renderConstraint c =
-  case c of
-    Syntax.AutoIncrement -> "AUTO_INCREMENT"
-    Syntax.PrimaryKey -> "PRIMARY KEY"
-    Syntax.Other t -> t
 
 compileTable ::
   Check.DeclEnv ->
@@ -148,7 +164,7 @@ compileTable env tableName items =
       , Map
           Text -- column name
           ( Type TypeInfo -- column type
-          , [Text] -- unary constraints
+          , [Syntax.Constraint] -- unary constraints
           )
       , [(Text, Vector Text)] -- higher arity constraints
       )
@@ -165,7 +181,7 @@ compileTable env tableName items =
                | Vector.length args == 1 ->
                  ( cols
                  , Map.adjust
-                     (\(ty, cs) -> (ty, cs ++ [renderConstraint constr]))
+                     (\(ty, cs) -> (ty, cs ++ [ constr ]))
                      (args Vector.! 0)
                      info
                  , constrs
@@ -173,7 +189,10 @@ compileTable env tableName items =
                | otherwise ->
                  ( cols
                  , info
-                 , constrs ++ [(renderConstraint constr, args)]
+                 , constrs ++
+                   case renderConstraint (Check._deLanguage env) constr of
+                     Nothing -> []
+                     Just c -> [(c, args)]
                  )
         )
         ([], Map.empty, [])
@@ -262,15 +281,17 @@ compileQuery q =
       foldMap (\alias -> " AS " <> Builder.byteString (encodeUtf8 alias)) m_alias <>
       foldMap (\cond -> " WHERE " <> compileExpr cond) m_cond
     InsertInto table cols vals ->
-      "INSERT " <>
-      fold (intersperse ", " $ foldr ((:) . compileExpr) [] vals) <>
-      " INTO " <> Builder.byteString (encodeUtf8 table) <>
-      parens (fold . intersperse ", " $ foldr ((:) . Builder.byteString . encodeUtf8) [] cols)
-    InsertIntoReturning table cols vals sel ->
-      "INSERT " <>
-      fold (intersperse ", " $ foldr ((:) . compileExpr) [] vals) <>
-      " INTO " <> Builder.byteString (encodeUtf8 table) <>
+      "INSERT INTO " <>
+      Builder.byteString (encodeUtf8 table) <>
       parens (fold . intersperse ", " $ foldr ((:) . Builder.byteString . encodeUtf8) [] cols) <>
+      " VALUES " <>
+      parens (fold . intersperse ", " $ foldr ((:) . compileExpr) [] vals)
+    InsertIntoReturning table cols vals sel ->
+      "INSERT INTO " <>
+      Builder.byteString (encodeUtf8 table) <>
+      parens (fold . intersperse ", " $ foldr ((:) . Builder.byteString . encodeUtf8) [] cols) <>
+      "VALUES " <>
+      parens (fold . intersperse ", " $ foldr ((:) . compileExpr) [] vals) <>
       " RETURNING " <> compileSelection sel
 
 row ::
@@ -278,13 +299,18 @@ row ::
   Check.DeclEnv ->
   (a -> Expr) ->
   Syntax.Expr Info a ->
-  Either CompileError (Vector Expr)
+  Either CompileError (Vector Text, Vector Expr)
 row env f e = do
   e' <- expr env f e
-  pure $
-    case e' of
-      Row es -> snd <$> es
-      _ -> [e']
+  go "" e'
+  where
+    go :: Text -> Expr -> Either CompileError (Vector Text, Vector Expr)
+    go !prefix e' =
+      case e' of
+        Row es ->
+          (\es' -> (es' >>= fst, es' >>= snd)) <$>
+          traverse (\(n, v) -> go (if Text.null prefix then n else prefix <> "_" <> n) v) es
+        _ -> pure ([prefix], [e'])
 
 query ::
   Show a =>
@@ -298,25 +324,33 @@ query env f e =
     Syntax.SelectFrom table ->
       pure $ SelectFrom Star (Var table) Nothing Nothing
     Syntax.InsertIntoReturning value table -> do
-      values <- row env f value
-      tableInfo <-
-        maybe (error "SQL.query - table not found") pure $
-        Map.lookup table (Check._deTables env)
+      rowRes <- row env f value
+      let
+        (columns, values) =
+          case rowRes of
+            (fields, es) ->
+              ( fields
+              , es
+              )
       pure $
         InsertIntoReturning
         table
-        (Check._tiColumnInfo tableInfo >>= fmap fst . Check.flattenColumnInfo . snd)
+        columns
         values
         Star
     Syntax.InsertInto value table -> do
-      values <- row env f value
-      tableInfo <-
-        maybe (error "SQL.query - table not found") pure $
-        Map.lookup table (Check._deTables env)
+      rowRes <- row env f value
+      let
+        (columns, values) =
+          case rowRes of
+            (fields, es) ->
+              ( fields
+              , es
+              )
       pure $
         InsertInto
         table
-        (Check._tiColumnInfo tableInfo >>= fmap fst . Check.flattenColumnInfo . snd)
+        columns
         values
     Syntax.Bind q' _ rest -> do
       q'' <- expr env f q'
@@ -369,7 +403,7 @@ expr env f e =
     Syntax.Update{} -> error "SQL.expr env update"
     Syntax.Extend{} -> error "SQL.expr env extend"
     Syntax.Some{} -> error "SQL.expr env some"
-    Syntax.None -> error "SQL.expr env none"
+    Syntax.None -> error "SQL.expr env some"
     Syntax.FoldOptional{} -> error "SQL.expr env foldoptional"
     Syntax.Name n ->
       error "todo: SQL.expr env name" n
@@ -406,7 +440,11 @@ expr env f e =
                       _ -> error $ "SQL.expr project - invalid column projection"
                   _ -> error $ "SQL.expr project - invalid origin " <> show valueOrigin
     Syntax.Var n -> pure $ f n
-    Syntax.Record fields -> Row <$> (traverse.traverse) (expr env f) fields
+    Syntax.Record fields ->
+      Row <$>
+      (traverse.traverse)
+        (expr env f)
+        (Vector.filter ((\case; Syntax.None -> False; _ -> True) . snd) fields)
     Syntax.Int n -> pure $ Int n
     Syntax.Bool b -> pure $ Bool b
     Syntax.IfThenElse a b c -> error "SQL.expr env ifthenelse" a b c

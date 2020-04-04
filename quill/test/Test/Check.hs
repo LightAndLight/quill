@@ -39,7 +39,7 @@ convertTest ct = do
   where
    env =
      QueryEnv
-     { _qeLanguage = Syntax.SQL2003
+     { _qeLanguage = Nothing
      , _qeNames = absurd
      , _qeLocals = absurd
      , _qeGlobalVars = mempty
@@ -63,7 +63,7 @@ checkTest ct = do
   where
    env =
      QueryEnv
-     { _qeLanguage = Syntax.SQL2003
+     { _qeLanguage = Nothing
      , _qeNames = absurd
      , _qeLocals = absurd
      , _qeGlobalVars = mempty
@@ -91,7 +91,7 @@ doesn'tCheckTest ct = do
   where
    env =
      QueryEnv
-     { _qeLanguage = Syntax.SQL2003
+     { _qeLanguage = Nothing
      , _qeNames = absurd
      , _qeLocals = absurd
      , _qeGlobalVars = mempty
