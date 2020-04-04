@@ -256,7 +256,7 @@ queryTests = do
         m_value <- Postgres.getvalue' res 0 0
         m_value `shouldBe` Just "0"
       pure ()
-  around setupDbQuery . describe "query" $ do
+  around setupDbQuery . describe "insert" $ do
     it "1" $ \conn -> do
       create <-
         compile $
@@ -313,13 +313,92 @@ queryTests = do
         }
       resultOk conn $ Postgres.exec conn insert
       do
-        res <-
-          resultOk conn $
-          Postgres.exec conn "SELECT * FROM Expenses;"
+        res <- resultOk conn $ Postgres.exec conn "SELECT * FROM Expenses;"
         (`shouldBe` 1) =<< Postgres.ntuples res
         (`shouldBe` 4) =<< Postgres.nfields res
         (`shouldBe` Just "1") <$> Postgres.getvalue' res 0 0
         (`shouldBe` Just "2") <$> Postgres.getvalue' res 0 1
         (`shouldBe` Just "3") <$> Postgres.getvalue' res 0 2
         (`shouldBe` Just "t") <$> Postgres.getvalue' res 0 3
+      pure ()
+  around setupDbQuery . describe "select" $ do
+    it "1" $ \conn -> do
+      create <-
+        compile $
+        Compile
+        { compile_prelude =
+          [ "type AUD = { dollars : Int, cents : Int };"
+          ]
+        , compile_parsePrelude = Parser.decls
+        , compile_checkPrelude =
+            Check.checkDecls Check.emptyDeclEnv . fromList
+        , compile_item =
+            [ "table Expenses {"
+            , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+            , "  cost : AUD,"
+            , "  is_food : Bool"
+            , "}"
+            ]
+        , compile_parseItem = Parser.decls
+        , compile_checkItem = \(_, env) -> Check.checkDecls env . fromList
+        , compile_normalise = id
+        , compile_gen =
+          \_ (ds, env) ->
+            Right @CompileError . Lazy.toStrict .
+            Builder.toLazyByteString $
+            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
+        }
+      resultOk conn $ Postgres.exec conn create
+      select <-
+        compile $
+        Compile
+        { compile_prelude =
+            [ "type AUD = { dollars : Int, cents : Int };"
+            , "table Expenses {"
+            , "  id : Int, PK(id), AUTO_INCREMENT(id),"
+            , "  cost : AUD,"
+            , "  is_food : Bool"
+            , "}"
+            ]
+        , compile_parsePrelude = Parser.decls
+        , compile_checkPrelude =
+            Check.checkDecls Check.emptyDeclEnv . fromList
+        , compile_item =
+            [ "select from Expenses"
+            ]
+        , compile_parseItem = Parser.query (const Nothing)
+        , compile_checkItem =
+            \(_, env) e ->
+              Check.checkExpr
+                (Check.toQueryEnv env)
+                e
+                (TQuery Check.anyTypeInfo .
+                 TMany Check.anyTypeInfo $
+                 TRecord Check.anyTypeInfo
+                 [ ("id", TInt Check.anyTypeInfo)
+                 , ( "cost"
+                   , TRecord Check.anyTypeInfo
+                     [ ("dollars", TInt Check.anyTypeInfo)
+                     , ("cents", TInt Check.anyTypeInfo)
+                     ]
+                   )
+                 , ("is_food", TBool Check.anyTypeInfo)
+                 ]
+                )
+        , compile_normalise = Normalise.normaliseExpr
+        , compile_gen =
+          \(_, env) e ->
+            Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
+            SQL.expr env absurd e
+        }
+      resultOk conn $
+        Postgres.exec conn "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
+      do
+        res <- resultOk conn $ Postgres.exec conn select
+        (`shouldBe` 1) =<< Postgres.ntuples res
+        (`shouldBe` 4) =<< Postgres.nfields res
+        (`shouldBe` Just "1") <$> Postgres.getvalue' res 0 0
+        (`shouldBe` Just "22") <$> Postgres.getvalue' res 0 1
+        (`shouldBe` Just "33") <$> Postgres.getvalue' res 0 2
+        (`shouldBe` Just "f") <$> Postgres.getvalue' res 0 3
       pure ()
