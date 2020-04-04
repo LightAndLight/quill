@@ -3,6 +3,9 @@
 {-# language TemplateHaskell #-}
 module Main where
 
+import qualified Capnp (defaultLimit, sGetValue, sPutValue)
+import qualified Capnp.Gen.Request.Pure as Request
+import qualified Capnp.Gen.Response.Pure as Response
 import Control.Concurrent (forkIO)
 import Control.Exception (bracket)
 import Control.Lens.TH (makeLenses)
@@ -11,7 +14,6 @@ import qualified Data.ByteString.Char8 as Char8
 import Data.Functor (void)
 import Network.Socket (Socket)
 import qualified Network.Socket as Socket
-import qualified Network.Socket.ByteString as Socket (send, recv)
 import Options.Applicative
 import System.Environment (lookupEnv)
 import qualified System.IO as IO
@@ -123,8 +125,10 @@ server cmd sock =
       let
         loop = do
           input <- putStr "input: " *> IO.hFlush IO.stdout *> Char8.getLine
-          count <- Socket.send sock input
-          output <- Socket.recv sock count
-          Char8.putStrLn $ "output: " <> output
+          count <- Capnp.sPutValue sock $ Request.Request'echo input
+          output <- Capnp.sGetValue sock Capnp.defaultLimit
+          case output of
+            Response.Response'echo output' -> Char8.putStrLn $ "output: " <> output'
+            _ -> error "unexpected response"
       in
         loop

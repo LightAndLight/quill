@@ -12,7 +12,37 @@ author:              Isaac Elliott
 maintainer:          isaace71295@gmail.com
 -- copyright:
 category:            Language
-extra-source-files:  CHANGELOG.md
+extra-source-files:
+  CHANGELOG.md,
+  schemas/request.capnp,
+  schemas/response.capnp
+
+library quill-schemas
+  exposed-modules:
+                       Capnp.Gen.Response
+                     , Capnp.Gen.Response.Pure
+                     , Capnp.Gen.Request
+                     , Capnp.Gen.Request.Pure
+  other-modules:       
+                       Capnp.Gen.ById.Xa3a72b9143c87ce3.Pure
+                     , Capnp.Gen.ById.Xa3a72b9143c87ce3
+                     , Capnp.Gen.ById.Xa3fb1aad7b12a786.Pure
+                     , Capnp.Gen.ById.Xa3fb1aad7b12a786
+  autogen-modules:
+                       Capnp.Gen.Response
+                     , Capnp.Gen.Response.Pure
+                     , Capnp.Gen.Request
+                     , Capnp.Gen.Request.Pure
+                     , Capnp.Gen.ById.Xa3a72b9143c87ce3.Pure
+                     , Capnp.Gen.ById.Xa3a72b9143c87ce3
+                     , Capnp.Gen.ById.Xa3fb1aad7b12a786.Pure
+                     , Capnp.Gen.ById.Xa3fb1aad7b12a786
+
+  build-depends:       base ^>=4.12.0.0
+                     , capnp == 0.4.0.0
+  hs-source-dirs:      schemas
+  ghc-options:         -Wall
+  default-language:    Haskell2010
 
 library
   exposed-modules:     Quill.Check
@@ -45,6 +75,8 @@ library
 executable quill
   main-is:             Main.hs
   build-depends:       base ^>=4.12.0.0
+                     , capnp == 0.4.0.0
+                     , quill-schemas
                      , bytestring
                      , lens
                      , network
@@ -56,6 +88,8 @@ executable quill
 executable quill-dummy
   main-is:             Dummy.hs
   build-depends:       base ^>=4.12.0.0
+                     , capnp == 0.4.0.0
+                     , quill-schemas
                      , bytestring
                      , network
                      , optparse-applicative

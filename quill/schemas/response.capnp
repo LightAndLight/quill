@@ -5,5 +5,6 @@ struct Response {
   union {
     done @0 :Void;
     rows @1 :List(List(Data));
+    echo @2 :Data;
   }
 }
