@@ -2,10 +2,12 @@
 -}
 module Main where
 
+import qualified Capnp (defaultLimit, sGetValue, sPutValue)
+import qualified Capnp.Gen.Request.Pure as Request
+import qualified Capnp.Gen.Response.Pure as Response
 import Control.Exception (bracket)
 import Network.Socket (Socket)
 import qualified Network.Socket as Socket
-import qualified Network.Socket.ByteString as Socket (send, recv)
 import Options.Applicative
 
 data Config
@@ -59,8 +61,8 @@ main = do
 
 runEcho :: Socket -> IO ()
 runEcho sock = do
-  putStrLn "Waiting for input"
-  input <- Socket.recv sock 4096
-  putStrLn "Recieved input"
-  _ <- Socket.send sock input
-  pure ()
+  input <- Capnp.sGetValue sock Capnp.defaultLimit
+  case input of
+    Request.Request'echo input' ->
+      Capnp.sPutValue sock $ Response.Response'echo input'
+    _ -> error "unexpected request"

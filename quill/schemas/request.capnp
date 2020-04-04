@@ -5,5 +5,6 @@ struct Request {
   union {
     quit @0 :Void;
     exec @1 :Data;
+    echo @2 :Data;
   }
 }
