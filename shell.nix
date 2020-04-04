@@ -44,7 +44,7 @@ in
 pkgs.mkShell {
   buildInputs = [
     pkgs.zlib.dev
-    pkgs.postgresql
+    pkgs.postgresql96
     pkgs.capnproto
     pkgs.haskell.packages.ghc865.capnp
   ];
