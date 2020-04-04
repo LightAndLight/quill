@@ -82,7 +82,7 @@ atomExpr var = hasField
 
     atom =
       (\v -> maybe (Name v) Var $ var v) <$> variable <|>
-      Int . read <$> some digit <|>
+      Int . read <$> token (some digit) <|>
       (\c ->
          case c of
            "True" -> Bool True
@@ -198,7 +198,7 @@ query var =
             Just{} -> InsertIntoReturning value table
        ) <$ reserved "insert" <*>
        expr var <* reserved "into" <*>
-       variable <*>
+       constructor <*>
        optional (reserved "returning")
     return_ = Return <$ reserved "return" <*> atomExpr var
     bind = do
@@ -293,10 +293,10 @@ decl =
 decls :: (Monad m, TokenParsing m) => m [Decl () ()]
 decls = some decl <* eof
 
-language :: (Monad m, TokenParsing m) => m Language
+language :: (Monad m, TokenParsing m) => m (Maybe Language)
 language =
-  symbol "#language" *> (Postgresql <$ symbol "postgresql" <|> SQL2003 <$ symbol "SQL2003") <|>
-  pure SQL2003
+  symbol "#language" *> (Just Postgresql <$ symbol "postgresql") <|>
+  pure Nothing
 
 parseString :: Parser a -> String -> Either String a
 parseString m str =

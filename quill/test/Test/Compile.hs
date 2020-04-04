@@ -79,7 +79,7 @@ compileTests = do
       ]
     , compile_parsePrelude = Parser.decls
     , compile_checkPrelude =
-        Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        Check.checkDecls Check.emptyDeclEnv . fromList
     , compile_item =
         [ "expenses <- select from Expenses;"
         , "return ("
@@ -123,7 +123,7 @@ compileTests = do
       ]
     , compile_parsePrelude = Parser.decls
     , compile_checkPrelude =
-        Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        Check.checkDecls Check.emptyDeclEnv . fromList
     , compile_item =
         [ "expenses <- select from Expenses;"
         , "return ("
@@ -162,7 +162,7 @@ compileTests = do
         [ "type AUD = { dollars : Int, cents : Int };" ]
     , compile_parsePrelude = Parser.decls
     , compile_checkPrelude =
-        Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        Check.checkDecls Check.emptyDeclEnv . fromList
     , compile_item =
         [ "table Expenses {"
         , "  id : Int,"
@@ -187,7 +187,7 @@ compileTests = do
         [ "type AUD = { dollars : Int, cents : Int };" ]
     , compile_parsePrelude = Parser.decls
     , compile_checkPrelude =
-        Check.checkDecls (Check.emptyDeclEnv Syntax.SQL2003) . fromList
+        Check.checkDecls Check.emptyDeclEnv . fromList
     , compile_item =
         [ "table Expenses {"
         , "  id : Int, PK(id), AUTO_INCREMENT(id),"

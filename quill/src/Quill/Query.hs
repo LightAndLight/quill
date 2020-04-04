@@ -62,7 +62,7 @@ load path = do
     either
       (throw . CheckError)
       pure
-      (Check.checkDecls (Check.emptyDeclEnv lang) $ Vector.fromList decls)
+      (Check.checkDecls (Check.emptyDeclEnv { Check._deLanguage = lang }) $ Vector.fromList decls)
   pure $ QueryEnv declEnv
 
 decodeValue ::

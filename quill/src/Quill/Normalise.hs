@@ -72,7 +72,12 @@ normaliseExpr e =
             m'
             n'
             (Syntax.Scope2 $ composeQuery (Syntax.unscope2 body) (Syntax.unscope2 body'))
-        _ -> Syntax.Bind (rewrap x) n $ Syntax.hoistScope2 normaliseExpr body
+        _ ->
+          Syntax.underInfo' (normaliseExpr $ Syntax.fromScope2 body) $ \rewrapB body' ->
+          case body' of
+            Syntax.Return value | Syntax.Var (Bound.B ()) <- Syntax.underInfo' value (\_ -> id) ->
+              x
+            _ -> Syntax.Bind (rewrap x) n $ Syntax.toScope2 (rewrapB body')
     Syntax.Return value -> Syntax.Return $ normaliseExpr value
     Syntax.For n value m_cond yield ->
       let
