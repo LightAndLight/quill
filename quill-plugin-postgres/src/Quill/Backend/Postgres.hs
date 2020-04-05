@@ -55,7 +55,8 @@ handleRequest ::
   IO Bool -- should we quit?
 handleRequest config sock req =
   case req of
-    Request'quit ->
+    Request'quit -> do
+      respond Response'quitting
       quit
     Request'exec input -> do
       withConnection config $ \conn -> do

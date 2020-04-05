@@ -9,7 +9,6 @@ import Test.Hspec
 import Quill.Check (QueryEnv(..), TypeError(..), TypeInfo(..), checkExpr, mkTypeInfo)
 import Quill.Normalise (normaliseExpr)
 import Quill.Syntax (Expr(..), Type(..))
-import qualified Quill.Syntax as Syntax
 
 anyTypeInfo :: TypeInfo
 anyTypeInfo = TypeInfo { _typeInfoOrigin = Nothing }
@@ -87,7 +86,7 @@ doesn'tCheckTest ct = do
       checkExpr env (doesn'tCheck_term ct) ty
   case m of
     Left err -> err `shouldBe` doesn'tCheck_error ct
-    Right a -> expectationFailure "\"doesn't check\" test failed"
+    Right _ -> expectationFailure "\"doesn't check\" test failed"
   where
    env =
      QueryEnv
