@@ -23,7 +23,6 @@ import Control.Lens.Indexed (itraverse)
 import qualified Data.Map as Map
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
 import Data.Int (Int64)
 import Data.Text (Text)
