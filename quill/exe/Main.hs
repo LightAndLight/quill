@@ -12,12 +12,17 @@ import Control.Lens.TH (makeLenses)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as Char8
 import Data.Functor (void)
+import GHC.Exts (fromString)
 import Network.Socket (Socket)
 import qualified Network.Socket as Socket
 import Options.Applicative
 import System.Environment (lookupEnv)
 import qualified System.IO as IO
 import qualified System.Process as Process
+import Text.Read (readMaybe)
+
+import Quill.Backend (Backend)
+import qualified Quill.Backend as Backend
 
 data Command
   = DebugPlugin
@@ -63,63 +68,40 @@ main = do
     cfgDbPort (\v -> (<|> v) <$> lookupEnv "QUILL_PORT") =<<
     cfgDbHost (\v -> (<|> v) <$> lookupEnv "QUILL_HOST") =<<
     execParser (info (helper <*> configParser) fullDesc)
-  addr <-
-    head <$>
-    Socket.getAddrInfo
-      (Just $
-       Socket.defaultHints
-       { Socket.addrFlags = [Socket.AI_PASSIVE]
-       , Socket.addrFamily = Socket.AF_INET
-       , Socket.addrSocketType = Socket.Stream
-       }
-      )
-      Nothing
-      (Just "0")
-  bracket
-    (Socket.socket
-       (Socket.addrFamily addr)
-       (Socket.addrSocketType addr)
-       (Socket.addrProtocol addr)
+  m_port <-
+    case _cfgDbPort config of
+      Nothing -> pure Nothing
+      Just str ->
+        case readMaybe str of
+          Nothing -> error $ "'" <> str <> "' is not a number"
+          Just port -> pure $ Just port
+  Backend.withBackendProcess
+    (fromString $ "quill-" <> _cfgBackend config)
+    (Backend.Config
+     { Backend._cfgDbHost = fromString <$> _cfgDbHost config
+     , Backend._cfgDbPort = m_port
+     , Backend._cfgDbName = fromString <$> _cfgDbName config
+     , Backend._cfgDbUser = fromString <$> _cfgDbUser config
+     , Backend._cfgDbPassword = fromString <$> _cfgDbPassword config
+     }
     )
-    Socket.close
-    (\init_sock -> do
-       Socket.bind init_sock (Socket.addrAddress addr)
-       port <-
-         (\case; Socket.SockAddrInet port _ -> pure port; _ -> error "Got non-IPv4 socket address") =<<
-         Socket.getSocketName init_sock
-       Socket.listen init_sock 5
-       forkBackend port config
-       bracket
-         (fst <$> Socket.accept init_sock)
-         Socket.close
-         (server $ _cfgCommand config)
-    )
+    (server $ _cfgCommand config)
 
-forkBackend :: Socket.PortNumber -> Config -> IO ()
-forkBackend port config =
-  void . forkIO $ do
-    Process.callProcess ("quill-" <> _cfgBackend config) $
-      ["--port", show port] <>
-      withArg "--db-host" _cfgDbHost <>
-      withArg "--db-port" _cfgDbPort <>
-      withArg "--db-name" _cfgDbName <>
-      withArg "--db-user" _cfgDbUser <>
-      withArg "--db-password" _cfgDbUser
-  where
-    withArg name get =
-      maybe [] (\arg -> [name, arg]) (get config)
-
-server :: Command -> Socket -> IO ()
-server cmd sock =
+server :: Command -> Backend -> IO ()
+server cmd backend =
   case cmd of
     DebugPlugin ->
       let
         loop = do
           input <- putStr "input: " *> IO.hFlush IO.stdout *> Char8.getLine
-          count <- Capnp.sPutValue sock $ Request.Request'echo input
-          output <- Capnp.sGetValue sock Capnp.defaultLimit
-          case output of
-            Response.Response'echo output' -> Char8.putStrLn $ "output: " <> output'
-            _ -> error "unexpected response"
+          case input of
+            "quit" -> pure ()
+            _ -> do
+              res <- Backend.request backend $ Request.Request'echo input
+              case res of
+                Response.Response'echo output -> Char8.putStrLn $ "output: " <> output
+                _ -> do
+                  putStrLn $ "Unexpected response: " <> show res
+              loop
       in
         loop
