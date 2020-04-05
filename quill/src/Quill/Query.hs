@@ -53,8 +53,6 @@ data QueryException
   | ArgumentMismatch Int Int
   | ArgumentCheckError Int (Check.TypeError Check.TypeInfo)
   | CompileError SQL.CompileError
-  | DbError ByteString
-  | UnknownError
   | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
@@ -67,7 +65,6 @@ instance Show QueryException where
   show e =
     case e of
       ParseError s -> "ParseError:\n\n" <> s
-      DbError s -> "DbError:\n\n" <> Char8.unpack s
       _ -> showQueryException e
 instance Exception QueryException
 
