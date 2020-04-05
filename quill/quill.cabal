@@ -49,14 +49,15 @@ library
 executable quill
   main-is:             Main.hs
   build-depends:       base ^>=4.12.0.0
-                     , capnp == 0.4.0.0
+                     , quill
                      , quill-plugin-api
                      , bytestring
+                     , capnp == 0.4.0.0
                      , lens
                      , network
                      , optparse-applicative
                      , process
-  hs-source-dirs:      src
+  hs-source-dirs:      exe
   ghc-options:         -threaded
   default-language:    Haskell2010
 
@@ -68,7 +69,7 @@ executable quill-dummy
                      , bytestring
                      , network
                      , optparse-applicative
-  hs-source-dirs:      src
+  hs-source-dirs:      exe
   default-language:    Haskell2010
 
 test-suite quill-tests

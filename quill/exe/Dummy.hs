@@ -57,9 +57,16 @@ main = do
     )
 
 runEcho :: Socket -> IO ()
-runEcho sock = do
-  input <- Capnp.sGetValue sock Capnp.defaultLimit
-  case input of
-    Request.Request'echo input' ->
-      Capnp.sPutValue sock $ Response.Response'echo input'
-    _ -> error "unexpected request"
+runEcho sock = go
+  where
+    go = do
+      req <- Capnp.sGetValue sock Capnp.defaultLimit
+      case req of
+        Request.Request'echo input' -> do
+          Capnp.sPutValue sock $ Response.Response'echo input'
+          go
+        Request.Request'quit ->
+          Capnp.sPutValue sock Response.Response'quitting
+        _ -> do
+          putStrLn $ "Unexpected request: " <> show req
+          go
