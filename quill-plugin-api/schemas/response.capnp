@@ -12,6 +12,7 @@ struct Response {
   union {
     result @0 :Result;
     echo @1 :Data;
-    error @2 :Text;
+    error @2 :Data;
+    done @3 :Void;
   }
 }
