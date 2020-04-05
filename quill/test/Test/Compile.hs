@@ -16,7 +16,6 @@ import Quill.Normalise (normaliseExpr)
 import Quill.Parser (Parser)
 import qualified Quill.Parser as Parser
 import Quill.Syntax (Type(..))
-import qualified Quill.Syntax as Syntax
 import qualified Quill.SQL as SQL
 
 data CompileTest where
@@ -50,18 +49,18 @@ compileTest
   ) =
   case Parser.parseString parsePrelude (unlines prelude) of
     Left err -> expectationFailure err
-    Right prelude ->
-      case checkPrelude prelude of
+    Right prelude' ->
+      case checkPrelude prelude' of
         Left err -> expectationFailure $ show err
-        Right prelude' ->
+        Right prelude'' ->
           case Parser.parseString parseItem (unlines item) of
             Left err -> expectationFailure err
-            Right item ->
-              case checkItem prelude' item of
+            Right item' ->
+              case checkItem prelude'' item' of
                 Left err -> expectationFailure $ show err
-                Right item' -> do
+                Right item'' -> do
                   -- print (normalise item')
-                  case gen prelude' (normalise item') of
+                  case gen prelude'' (normalise item'') of
                     Left err -> expectationFailure $ show err
                     Right code -> code `shouldBe` output
 

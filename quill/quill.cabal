@@ -43,7 +43,7 @@ library
                      , trifecta
                      , vector
   hs-source-dirs:      src
-  ghc-options:         -threaded -Wall -Werror
+  ghc-options:         -Wall -Werror
   default-language:    Haskell2010
 
 executable quill
@@ -80,10 +80,14 @@ test-suite quill-tests
                      , Test.Query
   build-depends:       base ^>=4.12.0.0
                      , quill
+                     , quill-plugin-api
+                     , quill-plugin-postgres
                      , bound
                      , bytestring >= 0.10
+                     , network == 2.8.0.1
                      , hspec
-                     , postgresql-libpq
                      , text
+                     , vector
   hs-source-dirs:      test
+  ghc-options:         -threaded -Wall -Werror
   default-language:    Haskell2010

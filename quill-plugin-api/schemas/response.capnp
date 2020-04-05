@@ -14,5 +14,6 @@ struct Response {
     echo @1 :Data;
     error @2 :Data;
     done @3 :Void;
+    quitting @4 :Void;
   }
 }

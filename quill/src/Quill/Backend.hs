@@ -1,5 +1,5 @@
 {-# language LambdaCase #-}
-module Quill.Backend (Backend, Config(..), withBackend, withBackendProcess, request) where
+module Quill.Backend (Backend, Config(..), emptyConfig, withBackend, withBackendProcess, request) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import Capnp.Gen.Request.Pure (Request(..))
@@ -22,6 +22,16 @@ data Config
   , _cfgDbName :: Maybe Text
   , _cfgDbUser :: Maybe Text
   , _cfgDbPassword :: Maybe Text
+  }
+
+emptyConfig :: Config
+emptyConfig =
+  Config
+  { _cfgDbHost = Nothing
+  , _cfgDbPort = Nothing
+  , _cfgDbName = Nothing
+  , _cfgDbUser = Nothing
+  , _cfgDbPassword = Nothing
   }
 
 withBackendProcess :: Text -> Config -> (Backend -> IO ()) -> IO ()
@@ -72,7 +82,14 @@ withBackend runBackend config k = do
        forkBackend runBackend init_sock config
        bracket
          (fst <$> Socket.accept init_sock)
-         Socket.close
+         (\sock -> do
+            Capnp.sPutValue sock Request'quit
+            res <- Capnp.sGetValue sock Capnp.defaultLimit
+            case res of
+              Response'quitting -> pure ()
+              _ -> putStrLn $ "Unexpected response: " <> show res
+            Socket.close sock
+         )
          (\sock -> do
             let
               backend = Backend $ \req -> do

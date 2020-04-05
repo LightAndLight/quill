@@ -1,20 +1,28 @@
 {-# language GADTs #-}
 {-# language OverloadedLists, OverloadedStrings #-}
+{-# language LambdaCase #-}
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
+import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
+import qualified Data.Text as Text
+import qualified Data.Vector as Vector
 import Data.Void (absurd)
-import qualified Database.PostgreSQL.LibPQ as Postgres
 import GHC.Exts (fromList)
 import GHC.Stack (HasCallStack)
+import qualified Network.Socket as Socket
 import System.Exit (exitFailure)
 import Test.Hspec
 
+import Quill.Backend (Backend)
+import qualified Quill.Backend as Backend
+import qualified Quill.Backend.Postgres as Postgres
 import qualified Quill.Check as Check
 import Quill.Normalise (Value(..))
 import qualified Quill.Normalise as Normalise
@@ -26,59 +34,40 @@ import qualified Quill.Query as Query
 import Quill.SQL (CompileError)
 import qualified Quill.SQL as SQL
 
-notError :: IO (Maybe ByteString) -> IO ()
-notError m =
-  m >>= \m_res ->
-  case m_res of
-    Just "" -> pure ()
-    Just message -> expectationFailure $ Char8.unpack message
-    Nothing -> pure ()
-
-resultOk :: Postgres.Connection -> IO (Maybe Postgres.Result) -> IO Postgres.Result
-resultOk conn m = do
-  m_res <- m
-  case m_res of
-    Nothing ->
-      maybe
-        (error "Unknown database failure")
-        ((*> error "Database error") . Char8.putStrLn) =<<
-        Postgres.errorMessage conn
-    Just res -> do
-      m_err <- Postgres.resultErrorMessage res
-      case m_err of
-        Just "" -> pure res
-        Just err -> do
-          Char8.putStrLn err
-          error "Database error"
-        Nothing ->
-          error "Database error"
-
 setupDb ::
-  (Postgres.Connection -> IO ()) ->
-  (Postgres.Connection -> IO ()) ->
-  (Postgres.Connection -> IO ()) ->
+  (Backend -> IO ()) ->
+  (Backend -> IO ()) ->
+  (Backend -> IO ()) ->
   IO ()
 setupDb setup teardown k =
-  bracket
-    (Postgres.connectdb "")
-    (\conn -> do
-        teardown conn
-        notError $ Postgres.errorMessage conn
-        Postgres.finish conn
+  Backend.withBackend
+    (\sock config -> do
+       port <-
+         (\case; Socket.SockAddrInet port _ -> pure port; _ -> error "Got non-IPv4 socket address") =<<
+         Socket.getSocketName sock
+       Postgres.run sock $
+         Postgres.Config
+         { Postgres._cfgPort = show port
+         , Postgres._cfgDbHost = Text.unpack <$> Backend._cfgDbHost config
+         , Postgres._cfgDbPort = show <$> Backend._cfgDbPort config
+         , Postgres._cfgDbName = Text.unpack <$> Backend._cfgDbName config
+         , Postgres._cfgDbUser = Text.unpack <$> Backend._cfgDbUser config
+         , Postgres._cfgDbPassword = Text.unpack <$> Backend._cfgDbPassword config
+         }
     )
-    (\conn -> do
-       setup conn
-       k conn
-    )
+    Backend.emptyConfig
+    (\b -> bracket (pure b) teardown (\backend -> setup backend *> k backend))
 
-setupDbDecode :: (Postgres.Connection -> IO ()) -> IO ()
+exec :: Backend -> ByteString -> IO Response
+exec backend = Backend.request backend . Request'exec
+
+setupDbDecode :: (Backend -> IO ()) -> IO ()
 setupDbDecode =
   setupDb
-    (\conn -> do
-       Postgres.exec conn "CREATE SEQUENCE Persons_id_seq;"
-       notError $ Postgres.errorMessage conn
+    (\backend -> do
+       _ <- exec backend "CREATE SEQUENCE Persons_id_seq;"
 
-       Postgres.exec conn $
+       _ <- exec backend $
          Char8.unlines
          [ "CREATE TABLE Persons ("
          , "id INT PRIMARY KEY DEFAULT nextval('Persons_id_seq'),"
@@ -86,16 +75,14 @@ setupDbDecode =
          , "checked BOOLEAN NOT NULL"
          , ");"
          ]
-       notError $ Postgres.errorMessage conn
 
-       Postgres.exec conn $
+       _ <- exec backend $
          Char8.unlines
          [ "INSERT INTO Persons ( age, checked )"
          , "VALUES ( 10, true ), ( 11, false ), ( 12, true );"
          ]
-       notError $ Postgres.errorMessage conn
 
-       Postgres.exec conn $
+       _ <- exec backend $
          Char8.unlines
          [ "CREATE TABLE Nested ("
          , "a INT NOT NULL,"
@@ -103,39 +90,41 @@ setupDbDecode =
          , "nest_c BOOLEAN NOT NULL"
          , ");"
          ]
-       notError $ Postgres.errorMessage conn
 
-       Postgres.exec conn $
+       _ <- exec backend $
          Char8.unlines
          [ "INSERT INTO Nested ( a, nest_b, nest_c )"
          , "VALUES ( 11, 100, true ), ( 22, 200, false ), ( 33, 300, true );"
          ]
-       notError $ Postgres.errorMessage conn
+
+       pure ()
     )
-    (\conn -> do
-       Postgres.exec conn "DROP TABLE Nested;"
-       Postgres.exec conn "DROP TABLE Persons;"
-       Postgres.exec conn "DROP SEQUENCE Persons_id_seq;"
+    (\backend -> do
+       _ <- exec backend "DROP TABLE Nested;"
+       _ <- exec backend "DROP TABLE Persons;"
+       _ <- exec backend "DROP SEQUENCE Persons_id_seq;"
        pure ()
     )
 
-setupDbBlank :: (Postgres.Connection -> IO ()) -> IO ()
+setupDbBlank :: (Backend -> IO ()) -> IO ()
 setupDbBlank =
   setupDb
     (\_ -> pure ())
     (\_ -> pure ())
 
-setupDbQuery :: (Postgres.Connection -> IO ()) -> IO ()
+setupDbQuery :: (Backend -> IO ()) -> IO ()
 setupDbQuery =
   setupDb
     (\_ -> pure ())
-    (\conn -> do
-       Postgres.exec conn "DROP TABLE Expenses;"
+    (\backend -> do
+       _ <- exec backend "DROP TABLE Expenses;"
        do
-         res <- resultOk conn $
-           Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
-         m_value <- Postgres.getvalue' res 0 0
-         m_value `shouldBe` Just "0"
+         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+         case res of
+           Response'result (Result _ _ results) -> results `shouldBe` [["0"]]
+           _ -> do
+             putStrLn $ "Unexpected response: " <> show res
+             exitFailure
        pure ()
     )
 
@@ -168,46 +157,54 @@ compile
   ) =
   case Parser.parseString parsePrelude (unlines prelude) of
     Left err -> error err
-    Right prelude ->
-      case checkPrelude prelude of
+    Right prelude' ->
+      case checkPrelude prelude' of
         Left err -> error $ show err
-        Right prelude' ->
+        Right prelude'' ->
           case Parser.parseString parseItem (unlines item) of
             Left err -> error err
-            Right item ->
-              case checkItem prelude' item of
+            Right item' ->
+              case checkItem prelude'' item' of
                 Left err -> error $ show err
-                Right item' -> do
+                Right item'' -> do
                   -- print item'
-                  case gen prelude' (normalise item') of
+                  case gen prelude'' (normalise item'') of
                     Left err -> error $ show err
                     Right code -> do
                       -- print code
                       pure code
 
+shouldBeResult :: Response -> IO Result
+shouldBeResult res =
+  case res of
+    Response'result res' -> pure res'
+    _ -> error $ "Expected result, got: " <> show res
+
 queryTests :: Spec
 queryTests = do
   around setupDbDecode . describe "decode" $ do
-    it "decodeRecord 1" $ \conn -> do
-      res <- maybe undefined pure =<< Postgres.exec conn "SELECT * FROM Persons;"
+    it "decodeRecord 1" $ \backend -> do
+      res <- exec backend "SELECT * FROM Persons;"
       let fields = [("id", TInt ()), ("age", TInt ()), ("checked", TBool ())]
-      one <- Query.decodeRecord res 0 fields
-      two <- Query.decodeRecord res 1 fields
-      three <- Query.decodeRecord res 2 fields
+      Result _ _ results <- shouldBeResult res
+      one <- Query.decodeRecord (results Vector.! 0) fields
+      two <- Query.decodeRecord (results Vector.! 1) fields
+      three <- Query.decodeRecord (results Vector.! 2) fields
       one `shouldBe` Record [("id", Int 1), ("age", Int 10), ("checked", Bool True)]
       two `shouldBe` Record [("id", Int 2), ("age", Int 11), ("checked", Bool False)]
       three `shouldBe` Record [("id", Int 3), ("age", Int 12), ("checked", Bool True)]
-    it "decodeRecord 2" $ \conn -> do
-      res <- maybe undefined pure =<< Postgres.exec conn "SELECT * FROM Nested;"
+    it "decodeRecord 2" $ \backend -> do
+      res <- exec backend "SELECT * FROM Nested;"
       let fields = [("a", TInt ()), ("nest", TRecord () [("b", TInt ()), ("c", TBool ())])]
-      one <- Query.decodeRecord res 0 fields
-      two <- Query.decodeRecord res 1 fields
-      three <- Query.decodeRecord res 2 fields
+      Result _ _ results <- shouldBeResult res
+      one <- Query.decodeRecord (results Vector.! 0) fields
+      two <- Query.decodeRecord (results Vector.! 1) fields
+      three <- Query.decodeRecord (results Vector.! 2) fields
       one `shouldBe` Record [("a", Int 11), ("nest", Record [("b", Int 100), ("c", Bool True)])]
       two `shouldBe` Record [("a", Int 22), ("nest", Record [("b", Int 200), ("c", Bool False)])]
       three `shouldBe` Record [("a", Int 33), ("nest", Record [("b", Int 300), ("c", Bool True)])]
   around setupDbBlank . describe "create table" $ do
-    it "1" $ \conn -> do
+    it "1" $ \backend -> do
       query <-
         compile $
         Compile
@@ -233,31 +230,25 @@ queryTests = do
             Builder.toLazyByteString $
             SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
         }
-      resultOk conn $ Postgres.exec conn query
+      _ <- exec backend query
       do
-        res <-
-          resultOk conn $
-          Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
-        m_value <- Postgres.getvalue' res 0 0
-        m_value `shouldBe` Just "1"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        Result _ _ results <- shouldBeResult res
+        results `shouldBe` [["1"]]
       do
-        res <-
-          resultOk conn $
-          Postgres.exec conn "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'expenses';"
-        (`shouldBe` 4) =<< Postgres.ntuples res
-        (`shouldBe` Just "id") =<< Postgres.getvalue' res 0 0
-        (`shouldBe` Just "cost_dollars") =<< Postgres.getvalue' res 1 0
-        (`shouldBe` Just "cost_cents") =<< Postgres.getvalue' res 2 0
-        (`shouldBe` Just "is_food") =<< Postgres.getvalue' res 3 0
-      resultOk conn $ Postgres.exec conn "DROP TABLE Expenses;"
+        res <- exec backend "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'expenses';"
+        Result rs cs results <- shouldBeResult res
+        rs `shouldBe` 4
+        cs `shouldBe` 1
+        results `shouldBe` [["id"], ["cost_dollars"], ["cost_cents"], ["is_food"]]
+      _ <- exec backend "DROP TABLE Expenses;"
       do
-        res <- resultOk conn $
-          Postgres.exec conn "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
-        m_value <- Postgres.getvalue' res 0 0
-        m_value `shouldBe` Just "0"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        Result _ _ results <- shouldBeResult res
+        results `shouldBe` [["0"]]
       pure ()
   around setupDbQuery . describe "insert" $ do
-    it "1" $ \conn -> do
+    it "1" $ \backend -> do
       create <-
         compile $
         Compile
@@ -283,7 +274,7 @@ queryTests = do
             Builder.toLazyByteString $
             SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
         }
-      resultOk conn $ Postgres.exec conn create
+      _ <- exec backend create
       insert <-
         compile $
         Compile
@@ -315,18 +306,16 @@ queryTests = do
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
             SQL.expr env absurd e
         }
-      resultOk conn $ Postgres.exec conn insert
+      _ <- exec backend insert
       do
-        res <- resultOk conn $ Postgres.exec conn "SELECT * FROM Expenses;"
-        (`shouldBe` 1) =<< Postgres.ntuples res
-        (`shouldBe` 4) =<< Postgres.nfields res
-        (`shouldBe` Just "1") <$> Postgres.getvalue' res 0 0
-        (`shouldBe` Just "2") <$> Postgres.getvalue' res 0 1
-        (`shouldBe` Just "3") <$> Postgres.getvalue' res 0 2
-        (`shouldBe` Just "t") <$> Postgres.getvalue' res 0 3
+        res <- exec backend "SELECT * FROM Expenses;"
+        Result rs cs results <- shouldBeResult res
+        rs `shouldBe` 1
+        cs `shouldBe` 4
+        results `shouldBe` [["1", "2", "3", "t"]]
       pure ()
   around setupDbQuery . describe "select" $ do
-    it "1" $ \conn -> do
+    it "1" $ \backend -> do
       create <-
         compile $
         Compile
@@ -352,7 +341,7 @@ queryTests = do
             Builder.toLazyByteString $
             SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
         }
-      resultOk conn $ Postgres.exec conn create
+      _ <- exec backend create
       select <-
         compile $
         Compile
@@ -396,21 +385,18 @@ queryTests = do
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
             SQL.expr env absurd e
         }
-      resultOk conn $
-        Postgres.exec conn "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
+      _ <- exec backend "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
       do
-        res <- resultOk conn $ Postgres.exec conn select
-        (`shouldBe` 1) =<< Postgres.ntuples res
-        (`shouldBe` 4) =<< Postgres.nfields res
-        (`shouldBe` Just "1") <$> Postgres.getvalue' res 0 0
-        (`shouldBe` Just "22") <$> Postgres.getvalue' res 0 1
-        (`shouldBe` Just "33") <$> Postgres.getvalue' res 0 2
-        (`shouldBe` Just "f") <$> Postgres.getvalue' res 0 3
+        res <- exec backend select
+        Result rs cs results <- shouldBeResult res
+        rs `shouldBe` 1
+        cs `shouldBe` 4
+        results `shouldBe` [["1", "22", "33", "f"]]
       pure ()
   around setupDbQuery . describe "query API" $ do
-    it "1" $ \conn -> do
+    it "1" $ \backend -> do
       qe <-
-        Query.loadString $
+        Query.loadString backend $
         unlines
         [ "type AUD = { dollars : Int, cents : Int };"
         , ""
@@ -428,17 +414,15 @@ queryTests = do
         , "  select from Expenses"
         , "}"
         ]
-      Query.createTable conn qe "Expenses"
+      Query.createTable qe "Expenses"
       insertRes <-
         Query.query
-          conn
           qe
           "insertExpense"
           [Record [("dollars", Int 10), ("cents", Int 99)], Bool False]
       insertRes `shouldBe` Unit
       selectRes <-
         Query.query
-          conn
           qe
           "selectExpenses"
           []
