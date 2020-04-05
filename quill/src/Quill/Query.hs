@@ -13,6 +13,8 @@ module Quill.Query
 where
 
 import qualified Bound.Scope as Bound
+import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (Exception, throw)
 import Control.Monad (when)
 import Control.Monad.State (StateT, evalStateT, get, put)
@@ -23,16 +25,17 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
+import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
-import Database.PostgreSQL.LibPQ (Connection)
-import qualified Database.PostgreSQL.LibPQ as Postgres
 import Text.Show.Deriving (makeShow)
 
+import Quill.Backend (Backend)
+import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
 import Quill.Marshall (Value)
 import qualified Quill.Marshall as Marshall
@@ -52,9 +55,10 @@ data QueryException
   | CompileError SQL.CompileError
   | DbError ByteString
   | UnknownError
-  | TooManyRows Postgres.Row (Syntax.Type Check.TypeInfo)
-  | ColumnMismatch Int Postgres.Column (Syntax.Type Check.TypeInfo)
+  | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
+  | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
+  | UnexpectedResponse Response
   deriving Typeable
 $(pure [])
 showQueryException :: QueryException -> String
@@ -67,10 +71,10 @@ instance Show QueryException where
       _ -> showQueryException e
 instance Exception QueryException
 
-newtype QueryEnv = QueryEnv Check.DeclEnv
+data QueryEnv = QueryEnv { _qeBackend :: Backend, _qeDeclEnv :: Check.DeclEnv }
 
-loadString :: String -> IO QueryEnv
-loadString file = do
+loadString :: Backend -> String -> IO QueryEnv
+loadString backend file = do
   let res = Parser.parseString ((,) <$> Parser.language <*> Parser.decls) file
   (lang, decls) <- either (throw . ParseError) pure res
   (_, declEnv) <-
@@ -78,10 +82,14 @@ loadString file = do
       (throw . CheckError)
       pure
       (Check.checkDecls (Check.emptyDeclEnv { Check._deLanguage = lang }) $ Vector.fromList decls)
-  pure . QueryEnv $ declEnv { Check._deLanguage = Just Syntax.Postgresql }
+  pure $
+    QueryEnv
+    { _qeBackend = backend
+    , _qeDeclEnv = declEnv { Check._deLanguage = Just Syntax.Postgresql }
+    }
 
-load :: FilePath -> IO QueryEnv
-load path = do
+load :: Backend -> FilePath -> IO QueryEnv
+load backend path = do
   res <- Parser.parseFile ((,) <$> Parser.language <*> Parser.decls) path
   (lang, decls) <- either (throw . ParseError) pure res
   (_, declEnv) <-
@@ -89,15 +97,18 @@ load path = do
       (throw . CheckError)
       pure
       (Check.checkDecls (Check.emptyDeclEnv { Check._deLanguage = lang }) $ Vector.fromList decls)
-  pure . QueryEnv $ declEnv { Check._deLanguage = Just Syntax.Postgresql }
+  pure $
+    QueryEnv
+    { _qeBackend = backend
+    , _qeDeclEnv = declEnv { Check._deLanguage = Just Syntax.Postgresql }
+    }
 
 decodeValue ::
-  Postgres.Result ->
-  Postgres.Row ->
+  Vector ByteString ->
   Syntax.Type t ->
   IO Value
-decodeValue res row ty = do
-  m_val <- liftIO $ Postgres.getvalue' res row 0
+decodeValue res ty = do
+  let m_val = res Vector.!? 0
   case m_val of
     Nothing ->
       error "impossible: getvalue' returned Nothing"
@@ -106,33 +117,32 @@ decodeValue res row ty = do
       Marshall.parseValue ty val
 
 decodeRecord ::
-  Postgres.Result ->
-  Postgres.Row ->
+  Vector ByteString ->
   Vector (Text, Syntax.Type t) ->
   IO Value
-decodeRecord res row a = evalStateT (go a) 0
+decodeRecord res a = evalStateT (go a) 0
   where
-    goType :: Syntax.Type t -> StateT Postgres.Column IO Value
+    goType :: Syntax.Type t -> StateT Int64 IO Value
     goType ty =
       case ty of
         Syntax.TRecord _ fields -> go fields
         _ -> do
           col <- get
-          m_val <- liftIO $ Postgres.getvalue' res row col
+          let m_val = res Vector.!? fromIntegral col
           put $ col + 1
           case m_val of
             Nothing ->
-              error "impossible: getvalue' returned Nothing"
+              error "impossible: missing column"
             Just val ->
               either (liftIO . throw . DecodeError val) pure $
               Marshall.parseValue ty val
 
-    go :: Vector (Text, Syntax.Type t) -> StateT Postgres.Column IO Value
+    go :: Vector (Text, Syntax.Type t) -> StateT Int64 IO Value
     go fields =
       Normalise.Record <$> traverse (\(n, t) -> (,) n <$> goType t) fields
 
-query :: Connection -> QueryEnv -> Text -> Vector Value -> IO Value
-query conn (QueryEnv env) name args = do
+query :: QueryEnv -> Text -> Vector Value -> IO Value
+query (QueryEnv backend env) name args = do
   entry <-
     maybe (throw $ QueryNotFound name) pure $
     Map.lookup name (Check._deGlobalQueries env)
@@ -157,65 +167,48 @@ query conn (QueryEnv env) name args = do
     Normalise.normaliseExpr $
     Bound.instantiate (args' Vector.!) (Check._qeBody entry)
   let stmt = Lazy.toStrict . Builder.toLazyByteString $ SQL.compileQuery q
-  res <- resultOk conn $ Postgres.exec conn stmt
-  numRows <- Postgres.ntuples res
-  numColumns <- Postgres.nfields res
-  case retTy of
-    Syntax.TQuery _ (Syntax.TMany _ rowTy) -> do
-      case rowTy of
-        Syntax.TRecord tyInfo fields -> do
-          origin <-
-            maybe (error "impossible: record missing origin") pure $
-            Check._typeInfoOrigin tyInfo
-          tableName <-
-            case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
-          tableInfo <-
-            maybe (error "impossible: missing table info") pure $
-            Map.lookup tableName (Check._deTables env)
-          let expectedNumColumns = Check._tiNumColumns tableInfo
-          when (numColumns /= Postgres.toColumn expectedNumColumns) . throw $
-            ColumnMismatch expectedNumColumns numColumns rowTy
-          values <- for [0..numRows-1] $ \row -> decodeRecord res row fields
-          pure $ Normalise.Many values
-        _ -> do
-          when (numColumns /= 1) . throw $
-            ColumnMismatch 1 numColumns rowTy
-          values <- for [0..numRows-1] $ \row -> decodeValue res row rowTy
-          pure $ Normalise.Many values
-    Syntax.TQuery _ rowTy -> do
-      when (numRows > 1) . throw $ TooManyRows numRows rowTy
-      case rowTy of
-        Syntax.TRecord _ fields -> do
-          let lfields = Vector.length fields
-          when (numColumns /= Postgres.toColumn lfields) . throw $
-            ColumnMismatch lfields numColumns rowTy
-          decodeRecord res 0 fields
-        Syntax.TUnit _ -> pure Normalise.Unit
-        _ -> do
-          when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
-          decodeValue res 0 rowTy
-    _ -> error "impossible: query doesn't have type TQuery"
+  res <- Backend.request backend $ Request'exec stmt
+  case res of
+    Response'result (Result { rows = numRows, columns = numColumns, data_ = results }) -> do
+      case retTy of
+        Syntax.TQuery _ (Syntax.TMany _ rowTy) -> do
+          case rowTy of
+            Syntax.TRecord tyInfo fields -> do
+              origin <-
+                maybe (error "impossible: record missing origin") pure $
+                Check._typeInfoOrigin tyInfo
+              tableName <-
+                case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
+              tableInfo <-
+                maybe (error "impossible: missing table info") pure $
+                Map.lookup tableName (Check._deTables env)
+              let expectedNumColumns = Check._tiNumColumns tableInfo
+              when (numColumns /= fromIntegral expectedNumColumns) . throw $
+                ColumnMismatch expectedNumColumns numColumns rowTy
+              values <- for results $ \row -> decodeRecord row fields
+              pure $ Normalise.Many values
+            _ -> do
+              when (numColumns /= 1) . throw $
+                ColumnMismatch 1 numColumns rowTy
+              values <- for results $ \row -> decodeValue row rowTy
+              pure $ Normalise.Many values
+        Syntax.TQuery _ rowTy -> do
+          when (numRows > 1) . throw $ TooManyRows numRows rowTy
+          case rowTy of
+            Syntax.TRecord _ fields -> do
+              let lfields = Vector.length fields
+              when (numColumns /= fromIntegral lfields) . throw $
+                ColumnMismatch lfields numColumns rowTy
+              decodeRecord (results Vector.! 0) fields
+            Syntax.TUnit _ -> pure Normalise.Unit
+            _ -> do
+              when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
+              decodeValue (results Vector.! 0) rowTy
+        _ -> error "impossible: query doesn't have type TQuery"
+    _ -> throw $ UnexpectedResponse res
 
-resultOk :: Connection -> IO (Maybe Postgres.Result) -> IO Postgres.Result
-resultOk conn m = do
-  m_res <- m
-  case m_res of
-    Nothing -> getErrMsg
-    Just res -> do
-      m_err <- Postgres.resultErrorMessage res
-      case m_err of
-        Just "" -> pure res
-        Just err -> throw $ DbError err
-        Nothing -> getErrMsg
-  where
-    getErrMsg =
-      maybe
-        (error "Unknown database failure")
-        (throw . DbError) =<<
-        Postgres.errorMessage conn
-
-createTable :: Connection -> QueryEnv -> Text -> IO ()
-createTable conn (QueryEnv env) table = do
+createTable :: QueryEnv -> Text -> IO ()
+createTable (QueryEnv backend env) table = do
   tableInfo <-
     maybe (throw $ TableNotFound table) pure $
     Map.lookup table (Check._deTables env)
@@ -223,5 +216,7 @@ createTable conn (QueryEnv env) table = do
     cmd =
       Lazy.toStrict . Builder.toLazyByteString $
       SQL.compileTable env table (Check._tiItems tableInfo)
-  _ <- resultOk conn $ Postgres.exec conn cmd
-  pure ()
+  res <- Backend.request backend $ Request'exec cmd
+  case res of
+    Response'done -> pure ()
+    _ -> throw $ UnexpectedResponse res

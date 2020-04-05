@@ -15,7 +15,8 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Quill.Check
+  exposed-modules:     Quill.Backend
+                     , Quill.Check
                      , Quill.Marshall
                      , Quill.Normalise
                      , Quill.Parser
@@ -23,8 +24,10 @@ library
                      , Quill.SQL
                      , Quill.Syntax
   build-depends:       base ^>=4.12.0.0
+                     , quill-plugin-api
                      , ansi-wl-pprint
                      , attoparsec
+                     , capnp == 0.4.0.0
                      , bifunctors
                      , bound
                      , bytestring
@@ -32,14 +35,15 @@ library
                      , deriving-compat
                      , lens
                      , mtl
+                     , network == 2.8.0.1
                      , parsers
-                     , postgresql-libpq
+                     , process
                      , text
                      , transformers
                      , trifecta
                      , vector
   hs-source-dirs:      src
-  ghc-options:         -Wall -Werror
+  ghc-options:         -threaded -Wall -Werror
   default-language:    Haskell2010
 
 executable quill
