@@ -55,7 +55,7 @@ data QueryException
   | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
-  | UnexpectedResponse Response ByteString
+  | UnexpectedResponse Response
   deriving Typeable
 $(pure [])
 showQueryException :: QueryException -> String
@@ -137,6 +137,25 @@ decodeRecord res a = evalStateT (go a) 0
     go fields =
       Normalise.Record <$> traverse (\(n, t) -> (,) n <$> goType t) fields
 
+resultResponse :: Response -> IO Result
+resultResponse res =
+  case res of
+    Response'result result -> pure result
+    _ -> throw $ UnexpectedResponse res
+
+doneResponse :: Response -> IO ()
+doneResponse res =
+  case res of
+    Response'done -> pure ()
+    _ -> throw $ UnexpectedResponse res
+
+resultOrDoneResponse :: Response -> IO (Maybe Result)
+resultOrDoneResponse res =
+  case res of
+    Response'result result -> pure $ Just result
+    Response'done -> pure Nothing
+    _ -> throw $ UnexpectedResponse res
+
 query :: QueryEnv -> Text -> Vector Value -> IO Value
 query (QueryEnv backend env) name args = do
   entry <-
@@ -164,44 +183,51 @@ query (QueryEnv backend env) name args = do
     Bound.instantiate (args' Vector.!) (Check._qeBody entry)
   let stmt = Lazy.toStrict . Builder.toLazyByteString $ SQL.compileQuery q
   res <- Backend.request backend $ Request'exec stmt
-  case res of
-    Response'result (Result { rows = numRows, columns = numColumns, data_ = results }) -> do
-      case retTy of
-        Syntax.TQuery _ (Syntax.TMany _ rowTy) -> do
-          case rowTy of
-            Syntax.TRecord tyInfo fields -> do
-              origin <-
-                maybe (error "impossible: record missing origin") pure $
-                Check._typeInfoOrigin tyInfo
-              tableName <-
-                case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
-              tableInfo <-
-                maybe (error "impossible: missing table info") pure $
-                Map.lookup tableName (Check._deTables env)
-              let expectedNumColumns = Check._tiNumColumns tableInfo
-              when (numColumns /= fromIntegral expectedNumColumns) . throw $
-                ColumnMismatch expectedNumColumns numColumns rowTy
-              values <- for results $ \row -> decodeRecord row fields
-              pure $ Normalise.Many values
-            _ -> do
-              when (numColumns /= 1) . throw $
-                ColumnMismatch 1 numColumns rowTy
-              values <- for results $ \row -> decodeValue row rowTy
-              pure $ Normalise.Many values
-        Syntax.TQuery _ rowTy -> do
+  case retTy of
+    Syntax.TQuery _ (Syntax.TMany _ rowTy) -> do
+      Result { rows = _, columns = numColumns, data_ = results } <- resultResponse res
+      case rowTy of
+        Syntax.TRecord tyInfo fields -> do
+          origin <-
+            maybe (error "impossible: record missing origin") pure $
+            Check._typeInfoOrigin tyInfo
+          tableName <-
+            case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
+          tableInfo <-
+            maybe (error "impossible: missing table info") pure $
+            Map.lookup tableName (Check._deTables env)
+          let expectedNumColumns = Check._tiNumColumns tableInfo
+          when (numColumns /= fromIntegral expectedNumColumns) . throw $
+            ColumnMismatch expectedNumColumns numColumns rowTy
+          values <- for results $ \row -> decodeRecord row fields
+          pure $ Normalise.Many values
+        _ -> do
+          when (numColumns /= 1) . throw $
+            ColumnMismatch 1 numColumns rowTy
+          values <- for results $ \row -> decodeValue row rowTy
+          pure $ Normalise.Many values
+    Syntax.TQuery _ rowTy ->
+      case rowTy of
+        Syntax.TRecord _ fields -> do
+          Result { rows = numRows, columns = numColumns, data_ = results } <- resultResponse res
           when (numRows > 1) . throw $ TooManyRows numRows rowTy
-          case rowTy of
-            Syntax.TRecord _ fields -> do
-              let lfields = Vector.length fields
-              when (numColumns /= fromIntegral lfields) . throw $
-                ColumnMismatch lfields numColumns rowTy
-              decodeRecord (results Vector.! 0) fields
-            Syntax.TUnit _ -> pure Normalise.Unit
-            _ -> do
-              when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
-              decodeValue (results Vector.! 0) rowTy
-        _ -> error "impossible: query doesn't have type TQuery"
-    _ -> throw $ UnexpectedResponse res stmt
+          let lfields = Vector.length fields
+          when (numColumns /= fromIntegral lfields) . throw $
+            ColumnMismatch lfields numColumns rowTy
+          decodeRecord (results Vector.! 0) fields
+        Syntax.TUnit _ -> do
+          m_result <- resultOrDoneResponse res
+          case m_result of
+            Nothing -> pure ()
+            Just result ->
+              when (rows result > 1) . throw $ TooManyRows (rows result) rowTy
+          pure Normalise.Unit
+        _ -> do
+          Result { rows = numRows, columns = numColumns, data_ = results } <- resultResponse res
+          when (numRows > 1) . throw $ TooManyRows numRows rowTy
+          when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
+          decodeValue (results Vector.! 0) rowTy
+    _ -> error "impossible: query doesn't have type TQuery"
 
 createTable :: QueryEnv -> Text -> IO ()
 createTable (QueryEnv backend env) table = do
@@ -212,7 +238,4 @@ createTable (QueryEnv backend env) table = do
     cmd =
       Lazy.toStrict . Builder.toLazyByteString $
       SQL.compileTable env table (Check._tiItems tableInfo)
-  res <- Backend.request backend $ Request'exec cmd
-  case res of
-    Response'done -> pure ()
-    _ -> throw $ UnexpectedResponse res cmd
+  doneResponse =<< Backend.request backend (Request'exec cmd)
