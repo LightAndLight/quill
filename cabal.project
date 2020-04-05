@@ -2,3 +2,4 @@ packages:
   ./quill
   ./quill-plugin-api
   ./quill-plugin-api-setup
+  ./quill-plugin-postgres

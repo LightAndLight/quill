@@ -1,10 +1,17 @@
 @0xa3fb1aad7b12a786;
 
 # Responses are sent from the backend to the driver
+
+struct Result {
+  rows @0 :Int64;
+  columns @1 :Int64;
+  data @2 :List(List(Data));
+}
+
 struct Response {
   union {
-    done @0 :Void;
-    rows @1 :List(List(Data));
-    echo @2 :Data;
+    result @0 :Result;
+    echo @1 :Data;
+    error @2 :Text;
   }
 }
