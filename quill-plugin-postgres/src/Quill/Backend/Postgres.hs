@@ -1,5 +1,5 @@
 {-# language OverloadedLists, OverloadedStrings #-}
-module Main where
+module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import Capnp.Gen.Request.Pure (Request(..))
@@ -14,9 +14,7 @@ import Data.Traversable (for)
 import Database.PostgreSQL.LibPQ (Connection)
 import qualified Database.PostgreSQL.LibPQ as Postgres
 import GHC.Exts (fromString)
-import Network.Socket (Socket, AddrInfo)
-import qualified Network.Socket as Socket
-import Options.Applicative
+import Network.Socket (Socket)
 
 data Config
   = Config
@@ -27,26 +25,6 @@ data Config
   , _cfgDbUser :: Maybe String
   , _cfgDbPassword :: Maybe String
   }
-
-configParser :: Parser Config
-configParser =
-  Config <$>
-  strOption (long "port" <> metavar "PORT" <> help "Communication port") <*>
-  optional (strOption $ long "db-host" <> metavar "DB_HOST" <> help "Hostname for the connection") <*>
-  optional (strOption $ long "db-port" <> metavar "DB_PORT" <> help "Port for the connection") <*>
-  optional (strOption $ long "db-db" <> metavar "DB_DATABASE" <> help "Database name") <*>
-  optional (strOption $ long "db-user" <> metavar "DB_USER" <> help "Database username") <*>
-  optional (strOption $ long "db-password" <> metavar "DB_PASSWORD" <> help "Database password")
-
-withSocket :: AddrInfo -> (Socket -> IO ()) -> IO ()
-withSocket addr =
-  bracket
-    (Socket.socket
-       (Socket.addrFamily addr)
-       (Socket.addrSocketType addr)
-       (Socket.addrProtocol addr)
-    )
-    Socket.close
 
 withConnection :: Config -> (Connection -> IO ()) -> IO ()
 withConnection config = bracket (Postgres.connectdb connString) Postgres.finish
@@ -62,29 +40,8 @@ withConnection config = bracket (Postgres.connectdb connString) Postgres.finish
       item "user" _cfgDbUser <>
       item "password" _cfgDbPassword
 
-main :: IO ()
-main = do
-  config <- execParser (info (helper <*> configParser) fullDesc)
-  addr <-
-    head <$>
-    Socket.getAddrInfo
-      (Just $
-       Socket.defaultHints
-       { Socket.addrFamily = Socket.AF_INET
-       , Socket.addrSocketType = Socket.Stream
-       }
-      )
-      (Just "127.0.0.1")
-      (Just $ _cfgPort config)
-  withSocket
-    addr
-    (\sock -> do
-      Socket.connect sock (Socket.addrAddress addr)
-      run config sock
-    )
-
-run :: Config -> Socket -> IO ()
-run config sock = loop
+run :: Socket -> Config -> IO ()
+run sock config = loop
   where
     loop = do
       req <- Capnp.sGetValue sock Capnp.defaultLimit
