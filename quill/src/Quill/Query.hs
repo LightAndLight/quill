@@ -55,7 +55,7 @@ data QueryException
   | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
-  | UnexpectedResponse Response
+  | UnexpectedResponse Response ByteString
   deriving Typeable
 $(pure [])
 showQueryException :: QueryException -> String
@@ -201,7 +201,7 @@ query (QueryEnv backend env) name args = do
               when (numColumns /= 1) . throw $ ColumnMismatch 1 numColumns rowTy
               decodeValue (results Vector.! 0) rowTy
         _ -> error "impossible: query doesn't have type TQuery"
-    _ -> throw $ UnexpectedResponse res
+    _ -> throw $ UnexpectedResponse res stmt
 
 createTable :: QueryEnv -> Text -> IO ()
 createTable (QueryEnv backend env) table = do
@@ -215,4 +215,4 @@ createTable (QueryEnv backend env) table = do
   res <- Backend.request backend $ Request'exec cmd
   case res of
     Response'done -> pure ()
-    _ -> throw $ UnexpectedResponse res
+    _ -> throw $ UnexpectedResponse res cmd
