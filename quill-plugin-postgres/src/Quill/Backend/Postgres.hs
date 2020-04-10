@@ -2,7 +2,10 @@
 module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
-import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Request.Pure
+  ( Request(..)
+  , Table(Table)
+  )
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Control.Exception (bracket)
 import Control.Monad (unless)
@@ -48,6 +51,9 @@ run sock config = loop
       quit <- handleRequest config sock req
       unless quit loop
 
+createTable :: Table -> ByteString
+createTable (Table name columns constraints) = _
+
 handleRequest ::
   Config ->
   Socket ->
@@ -58,6 +64,18 @@ handleRequest config sock req =
     Request'quit -> do
       respond Response'quitting
       quit
+    Request'createTable table -> do
+      withConnection config $ \conn -> do
+        let input = createTable table
+        m_res <- Postgres.exec conn input
+        case m_res of
+          Nothing -> respondDbError conn
+          Just res -> do
+            status <- Postgres.resultStatus res
+            case status of
+              Postgres.CommandOk -> respond Response'done
+              _ -> respondDbError conn
+      continue
     Request'exec input -> do
       withConnection config $ \conn -> do
         m_res <- Postgres.exec conn input
@@ -102,7 +120,7 @@ handleRequest config sock req =
       respond $ Response'echo input
       continue
     Request'unknown' tag -> do
-      respond . Response'error . fromString $ "Unexpected union tag: " <> show tag
+      respondError . fromString $ "Unexpected union tag: " <> show tag
       continue
   where
     respondError = respond . Response'error
