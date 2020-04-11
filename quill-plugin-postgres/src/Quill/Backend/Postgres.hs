@@ -68,10 +68,7 @@ createTable (Table tableName columns constraints) =
     (List.intersperse ",\n" $
      foldr ((:) . createColumn) [] columns
     ) <>
-  fold
-    (List.intersperse ",\n" $
-     foldr ((:) . createConstraint) [] constraints
-    ) <>
+  foldMap ((",\n" <>) . createConstraint) constraints <>
   ");" <>
   alterSequences columns
   where
