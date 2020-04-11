@@ -126,6 +126,38 @@ data Info
   { _infoType :: Type TypeInfo
   } deriving Show
 
+data DeclEnv
+  = DeclEnv
+  { _deLanguage :: Maybe Language
+  , _deTypes :: Map Text (Type TypeInfo)
+  , _deTables :: Map Text TableInfo
+  , _deGlobalVars :: Map Text (Type TypeInfo)
+  , _deGlobalQueries :: Map Text QueryEntry
+  } deriving Show
+
+emptyDeclEnv :: DeclEnv
+emptyDeclEnv =
+  DeclEnv
+  { _deLanguage = Nothing
+  , _deTypes = mempty
+  , _deTables = mempty
+  , _deGlobalVars = mempty
+  , _deGlobalQueries = mempty
+  }
+
+toQueryEnv :: DeclEnv -> QueryEnv Void
+toQueryEnv env =
+  QueryEnv
+  { _qeLanguage = _deLanguage env
+  , _qeNames = absurd
+  , _qeLocals = absurd
+  , _qeGlobalVars = _deGlobalVars env
+  , _qeGlobalQueries = _deGlobalQueries env
+  , _qeTypes = _deTypes env
+  , _qeTables = _deTables env
+  }
+
+
 resolveType ::
   MonadError (TypeError t) m =>
   QueryEnv a ->
@@ -659,37 +691,6 @@ data QueryEntry
   , _qeRetTy :: Type TypeInfo
   , _qeBody :: Scope Int (Expr Info) Void
   } deriving Show
-
-data DeclEnv
-  = DeclEnv
-  { _deLanguage :: Maybe Language
-  , _deTypes :: Map Text (Type TypeInfo)
-  , _deTables :: Map Text TableInfo
-  , _deGlobalVars :: Map Text (Type TypeInfo)
-  , _deGlobalQueries :: Map Text QueryEntry
-  } deriving Show
-
-emptyDeclEnv :: DeclEnv
-emptyDeclEnv =
-  DeclEnv
-  { _deLanguage = Nothing
-  , _deTypes = mempty
-  , _deTables = mempty
-  , _deGlobalVars = mempty
-  , _deGlobalQueries = mempty
-  }
-
-toQueryEnv :: DeclEnv -> QueryEnv Void
-toQueryEnv env =
-  QueryEnv
-  { _qeLanguage = _deLanguage env
-  , _qeNames = absurd
-  , _qeLocals = absurd
-  , _qeGlobalVars = _deGlobalVars env
-  , _qeGlobalQueries = _deGlobalQueries env
-  , _qeTypes = _deTypes env
-  , _qeTables = _deTables env
-  }
 
 data DeclError t t'
   = UnknownConstraint Text
