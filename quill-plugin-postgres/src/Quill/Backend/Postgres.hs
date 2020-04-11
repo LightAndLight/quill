@@ -3,7 +3,10 @@ module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import Capnp.Gen.Request.Pure
-  ( Request(..)
+  ( Column(Column)
+  , Constraint(..)
+  , Other(Other)
+  , Request(..)
   , Table(Table)
   )
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
@@ -12,7 +15,12 @@ import Control.Monad (unless)
 import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (Builder)
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
+import qualified Data.ByteString.Lazy as Lazy
+import Data.Foldable (fold)
+import qualified Data.List as List
 import Data.Traversable (for)
 import Database.PostgreSQL.LibPQ (Connection)
 import qualified Database.PostgreSQL.LibPQ as Postgres
@@ -52,7 +60,75 @@ run sock config = loop
       unless quit loop
 
 createTable :: Table -> ByteString
-createTable (Table name columns constraints) = _
+createTable (Table tableName columns constraints) =
+  Lazy.toStrict . Builder.toLazyByteString $
+  createSequences columns <>
+  "CREATE TABLE " <> Builder.byteString tableName <> "(\n" <>
+  fold
+    (List.intersperse ",\n" $
+     foldr ((:) . createColumn) [] columns
+    ) <>
+  fold
+    (List.intersperse ",\n" $
+     foldr ((:) . createConstraint) [] constraints
+    ) <>
+  ");" <>
+  alterSequences columns
+  where
+    createSequences =
+      foldMap
+        (\(Column name _ _ autoIncrement) ->
+          if autoIncrement
+          then
+            "CREATE SEQUENCE " <> Builder.byteString tableName <>
+            "_" <> Builder.byteString name <>
+            "_seq;\n"
+          else ""
+        )
+    alterSequences =
+      foldMap
+        (\(Column name _ _ autoIncrement) ->
+          if autoIncrement
+          then
+            "ALTER SEQUENCE " <> Builder.byteString tableName <>
+            "_" <> Builder.byteString name <>
+            "_seq OWNED BY " <>
+            Builder.byteString tableName <> "." <> Builder.byteString name <>
+            ";\n"
+          else ""
+        )
+
+    createColumn :: Column -> Builder
+    createColumn (Column name type_ notNull autoIncrement) =
+      Builder.byteString name <> " " <>
+      Builder.byteString type_ <>
+      (if notNull then " NOT NULL" else "") <>
+      (if autoIncrement
+       then
+         " DEFAULT nextval('" <> Builder.byteString tableName <>
+         "_" <> Builder.byteString name <>
+         "_seq')"
+       else ""
+      )
+
+    createConstraint :: Constraint -> Builder
+    createConstraint c =
+      case c of
+        Constraint'primaryKey args ->
+          "PRIMARY KEY(" <>
+          fold
+            (List.intersperse "," $
+             foldr ((:) . Builder.byteString) [] args
+            ) <>
+          ")"
+        Constraint'other (Other name args) ->
+          Builder.byteString name <> "(" <>
+          fold
+            (List.intersperse "," $
+             foldr ((:) . Builder.byteString) [] args
+            ) <>
+          ")"
+        Constraint'unknown' tag -> error $ "Unknown tag: " <> show tag
 
 handleRequest ::
   Config ->
@@ -66,8 +142,7 @@ handleRequest config sock req =
       quit
     Request'createTable table -> do
       withConnection config $ \conn -> do
-        let input = createTable table
-        m_res <- Postgres.exec conn input
+        m_res <- Postgres.exec conn $ createTable table
         case m_res of
           Nothing -> respondDbError conn
           Just res -> do

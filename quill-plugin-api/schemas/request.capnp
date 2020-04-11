@@ -1,13 +1,5 @@
 @0xa3a72b9143c87ce3;
 
-struct AutoIncrement {
-  arg @0 :Data;
-}
-
-struct PrimaryKey {
-  arg @0 :Data;
-}
-
 struct Other {
   name @0 :Data;
   args @1 :List(Data);
@@ -15,15 +7,16 @@ struct Other {
 
 struct Constraint {
   union {
-    autoIncrement @0 :AutoIncrement;
-    primaryKey @1 :PrimaryKey;
-    other @2 :Other;
+    primaryKey @0 :List(Data);
+    other @1 :Other;
   }
 }
 
 struct Column {
   name @0 :Data;
   type @1 :Data;
+  notNull @2 :Bool;
+  autoIncrement @3 :Bool;
 }
 
 struct Table {
