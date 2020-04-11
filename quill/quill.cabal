@@ -23,6 +23,7 @@ library
                      , Quill.Query
                      , Quill.SQL
                      , Quill.Syntax
+                     , Quill.Syntax.Migration
   build-depends:       base ^>=4.12.0.0
                      , quill-plugin-api
                      , ansi-wl-pprint
