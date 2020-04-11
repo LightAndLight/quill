@@ -20,11 +20,11 @@ import Control.Monad (when)
 import Control.Monad.State (StateT, evalStateT, get, put)
 import Control.Monad.IO.Class (liftIO)
 import Control.Lens.Indexed (itraverse)
-import qualified Data.Map as Map
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as Lazy
 import Data.Int (Int64)
+import qualified Data.Map as Map
 import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
@@ -157,10 +157,10 @@ resultOrDoneResponse res =
     _ -> throw $ UnexpectedResponse res
 
 query :: QueryEnv -> Text -> Vector Value -> IO Value
-query (QueryEnv backend env) name args = do
+query (QueryEnv backend env) queryName args = do
   entry <-
-    maybe (throw $ QueryNotFound name) pure $
-    Map.lookup name (Check._deGlobalQueries env)
+    maybe (throw $ QueryNotFound queryName) pure $
+    Map.lookup queryName (Check._deGlobalQueries env)
   let
     argTys = Check._qeArgTys entry
     retTy = Check._qeRetTy entry
@@ -230,12 +230,10 @@ query (QueryEnv backend env) name args = do
     _ -> error "impossible: query doesn't have type TQuery"
 
 createTable :: QueryEnv -> Text -> IO ()
-createTable (QueryEnv backend env) table = do
+createTable (QueryEnv backend env) tableName = do
   tableInfo <-
-    maybe (throw $ TableNotFound table) pure $
-    Map.lookup table (Check._deTables env)
+    maybe (throw $ TableNotFound tableName) pure $
+    Map.lookup tableName (Check._deTables env)
   let
-    cmd =
-      Lazy.toStrict . Builder.toLazyByteString $
-      SQL.compileTable env table (Check._tiItems tableInfo)
-  doneResponse =<< Backend.request backend (Request'exec cmd)
+    table = SQL.compileTable tableName tableInfo
+  doneResponse =<< Backend.request backend (Request'createTable table)

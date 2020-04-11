@@ -1,11 +1,16 @@
 {-# language GADTs #-}
-{-# language OverloadedStrings #-}
+{-# language OverloadedLists, OverloadedStrings #-}
 {-# language TypeApplications #-}
 module Test.Compile (compileTests) where
 
-import Data.ByteString (ByteString)
+import Capnp.Gen.Request.Pure
+  ( Column(..)
+  , Table(Table)
+  )
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as Lazy
+import qualified Data.Map as Map
+import qualified Data.Maybe as Maybe
 import Data.Void (absurd)
 import GHC.Exts (fromList)
 import Test.Hspec
@@ -20,7 +25,7 @@ import qualified Quill.SQL as SQL
 
 data CompileTest where
   CompileTest ::
-    (Show e, Show e', Show item', Show compileError) =>
+    (Show e, Show e', Show item', Show compileError, Eq output, Show output) =>
     { compile_prelude :: [String]
     , compile_parsePrelude :: Parser prelude
     , compile_checkPrelude :: prelude -> Either e prelude'
@@ -28,8 +33,8 @@ data CompileTest where
     , compile_parseItem :: Parser item
     , compile_checkItem :: prelude' -> item -> Either e' item'
     , compile_normalise :: item' -> item'
-    , compile_gen :: prelude' -> item' -> Either compileError ByteString
-    , compile_output :: ByteString
+    , compile_gen :: prelude' -> item' -> Either compileError output
+    , compile_output :: output
     } ->
     CompileTest
 
@@ -168,16 +173,39 @@ compileTests = do
         , "  cost : AUD"
         , "}"
         ]
-    , compile_parseItem = Parser.decls
+    , compile_parseItem = Parser.decl
     , compile_checkItem =
-      \(_, env) -> Check.checkDecls env . fromList
+      \(_, env) -> Check.checkDecls env . pure
     , compile_normalise = id
     , compile_gen =
-        \_ (e, env) ->
-          Right @SQL.CompileError . Lazy.toStrict . Builder.toLazyByteString $
-          SQL.compileDecls env e
+        \_ (_, env) ->
+          Right @SQL.CompileError $
+          SQL.compileTable
+            "Expenses"
+            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
     , compile_output =
-      "CREATE TABLE Expenses(\nid int NOT NULL,\ncost_dollars int NOT NULL,\ncost_cents int NOT NULL\n);"
+      Table
+        "Expenses"
+        [ Column
+          { name = "id"
+          , type_ = "INTEGER"
+          , notNull = True
+          , autoIncrement = False
+          }
+        , Column
+          { name = "cost_dollars"
+          , type_ = "INTEGER"
+          , notNull = True
+          , autoIncrement = False
+          }
+        , Column
+          { name = "cost_cents"
+          , type_ = "INTEGER"
+          , notNull = True
+          , autoIncrement = False
+          }
+        ]
+        []
     }
   it "4" $
     compileTest $
@@ -193,14 +221,37 @@ compileTests = do
         , "  cost : AUD"
         , "}"
         ]
-    , compile_parseItem = Parser.decls
+    , compile_parseItem = Parser.decl
     , compile_checkItem =
-      \(_, env) -> Check.checkDecls env . fromList
+      \(_, env) -> Check.checkDecls env . pure
     , compile_normalise = id
     , compile_gen =
-        \_ (e, env) ->
-          Right @SQL.CompileError . Lazy.toStrict . Builder.toLazyByteString $
-          SQL.compileDecls env e
+        \_ (_, env) ->
+          Right @SQL.CompileError $
+          SQL.compileTable
+            "Expenses"
+            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
     , compile_output =
-      "CREATE TABLE Expenses(\nid int NOT NULL PRIMARY KEY AUTO_INCREMENT,\ncost_dollars int NOT NULL,\ncost_cents int NOT NULL\n);"
+        Table
+          "Expenses"
+          [ Column
+            { name = "id"
+            , type_ = "INTEGER"
+            , notNull = True
+            , autoIncrement = True
+            }
+          , Column
+            { name = "cost_dollars"
+            , type_ = "INTEGER"
+            , notNull = True
+            , autoIncrement = False
+            }
+          , Column
+            { name = "cost_cents"
+            , type_ = "INTEGER"
+            , notNull = True
+            , autoIncrement = False
+            }
+          ]
+          []
     }

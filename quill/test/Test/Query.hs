@@ -4,13 +4,20 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
-import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Request.Pure
+  ( Column(..)
+  , Constraint(..)
+  , Request(..)
+  , Table(Table)
+  )
 import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
+import qualified Data.Map as Map
+import qualified Data.Maybe as Maybe
 import qualified Data.Text as Text
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
@@ -29,7 +36,6 @@ import qualified Quill.Normalise as Normalise
 import Quill.Parser (Parser)
 import qualified Quill.Parser as Parser
 import Quill.Syntax (Type(..))
-import qualified Quill.Syntax as Syntax
 import qualified Quill.Query as Query
 import Quill.SQL (CompileError)
 import qualified Quill.SQL as SQL
@@ -82,20 +88,37 @@ setupDb setup teardown k =
 exec :: Backend -> ByteString -> IO Response
 exec backend = Backend.request backend . Request'exec
 
+createTable :: Backend -> Table -> IO Response
+createTable backend = Backend.request backend . Request'createTable
+
 setupDbDecode :: (Backend -> IO ()) -> IO ()
 setupDbDecode =
   setupDb
     (\backend -> do
-       _ <- exec backend "CREATE SEQUENCE Persons_id_seq;"
-
-       _ <- exec backend $
-         Char8.unlines
-         [ "CREATE TABLE Persons ("
-         , "id INT PRIMARY KEY DEFAULT nextval('Persons_id_seq'),"
-         , "age INT NOT NULL,"
-         , "checked BOOLEAN NOT NULL"
-         , ");"
-         ]
+       _ <-
+         (shouldBeDone =<<) . createTable backend $
+         Table
+           "Persons"
+           [ Column
+             { name = "id"
+             , type_ = "INT"
+             , notNull = True
+             , autoIncrement = True
+             }
+           , Column
+             { name = "age"
+             , type_ = "INT"
+             , notNull = True
+             , autoIncrement = False
+             }
+           , Column
+             { name = "checked"
+             , type_ = "BOOLEAN"
+             , notNull = True
+             , autoIncrement = False
+             }
+           ]
+           [ Constraint'primaryKey ["id"] ]
 
        _ <- exec backend $
          Char8.unlines
@@ -103,14 +126,30 @@ setupDbDecode =
          , "VALUES ( 10, true ), ( 11, false ), ( 12, true );"
          ]
 
-       _ <- exec backend $
-         Char8.unlines
-         [ "CREATE TABLE Nested ("
-         , "a INT NOT NULL,"
-         , "nest_b INT NOT NULL,"
-         , "nest_c BOOLEAN NOT NULL"
-         , ");"
-         ]
+       _ <-
+         (shouldBeDone =<<) . createTable backend $
+         Table
+           "Nested"
+           [ Column
+             { name = "a"
+             , type_ = "INT"
+             , notNull = True
+             , autoIncrement = False
+             }
+           , Column
+             { name = "nest_b"
+             , type_ = "INT"
+             , notNull = True
+             , autoIncrement = False
+             }
+           , Column
+             { name = "nest_c"
+             , type_ = "BOOLEAN"
+             , notNull = True
+             , autoIncrement = False
+             }
+           ]
+           []
 
        _ <- exec backend $
          Char8.unlines
@@ -149,7 +188,7 @@ setupDbQuery =
        pure ()
     )
 
-data Compile where
+data Compile output where
   Compile ::
     (Show e, Show e', Show item, Show item', Show compileError) =>
     { compile_prelude :: [String]
@@ -159,11 +198,11 @@ data Compile where
     , compile_parseItem :: Parser item
     , compile_checkItem :: prelude' -> item -> Either e' item'
     , compile_normalise :: item' -> item'
-    , compile_gen :: prelude' -> item' -> Either compileError ByteString
+    , compile_gen :: prelude' -> item' -> Either compileError output
     } ->
-    Compile
+    Compile output
 
-compile :: HasCallStack => Compile -> IO ByteString
+compile :: HasCallStack => Compile output -> IO output
 compile
   (Compile
    { compile_prelude = prelude
@@ -194,6 +233,12 @@ compile
                     Right code -> do
                       -- print code
                       pure code
+
+shouldBeDone :: Response -> IO ()
+shouldBeDone res =
+  case res of
+    Response'done -> pure ()
+    _ -> error $ "Expected result, got: " <> show res
 
 shouldBeResult :: Response -> IO Result
 shouldBeResult res =
@@ -242,16 +287,17 @@ queryTests = do
             , "  is_food : Bool"
             , "}"
             ]
-        , compile_parseItem = Parser.decls
-        , compile_checkItem = \(_, env) -> Check.checkDecls env . fromList
+        , compile_parseItem = Parser.decl
+        , compile_checkItem = \(_, env) -> Check.checkDecls env . pure
         , compile_normalise = id
         , compile_gen =
-          \_ (ds, env) ->
-            Right @CompileError . Lazy.toStrict .
-            Builder.toLazyByteString $
-            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
+          \_ (_, env) ->
+            Right @CompileError $
+            SQL.compileTable
+              "Expenses"
+              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- exec backend query
+      _ <- createTable backend query
       do
         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
@@ -286,16 +332,17 @@ queryTests = do
             , "  is_food : Bool"
             , "}"
             ]
-        , compile_parseItem = Parser.decls
-        , compile_checkItem = \(_, env) -> Check.checkDecls env . fromList
+        , compile_parseItem = Parser.decl
+        , compile_checkItem = \(_, env) -> Check.checkDecls env . pure
         , compile_normalise = id
         , compile_gen =
-          \_ (ds, env) ->
-            Right @CompileError . Lazy.toStrict .
-            Builder.toLazyByteString $
-            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
+          \_ (_, env) ->
+            Right @CompileError $
+            SQL.compileTable
+              "Expenses"
+              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- exec backend create
+      _ <- createTable backend create
       insert <-
         compile $
         Compile
@@ -353,16 +400,17 @@ queryTests = do
             , "  is_food : Bool"
             , "}"
             ]
-        , compile_parseItem = Parser.decls
-        , compile_checkItem = \(_, env) -> Check.checkDecls env . fromList
+        , compile_parseItem = Parser.decl
+        , compile_checkItem = \(_, env) -> Check.checkDecls env . pure
         , compile_normalise = id
         , compile_gen =
-          \_ (ds, env) ->
-            Right @CompileError . Lazy.toStrict .
-            Builder.toLazyByteString $
-            SQL.compileDecls (env { Check._deLanguage = Just Syntax.Postgresql }) ds
+          \_ (_, env) ->
+            Right @CompileError $
+            SQL.compileTable
+              "Expenses"
+              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- exec backend create
+      _ <- createTable backend create
       select <-
         compile $
         Compile

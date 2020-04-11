@@ -11,14 +11,21 @@ module Quill.SQL
   , compileExpr
   , compileQuery
   , compileTable
-  , compileDecls
+  , compileType
   )
 where
 
+import Capnp.Gen.Request.Pure
+  ( Column(..)
+  , Constraint(..)
+  , Table(Table)
+  , Other(Other)
+  )
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Lens.Cons (_Cons)
 import Control.Lens.Fold ((^?))
+import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Builder as Builder
 import Data.Foldable (fold, foldl')
@@ -30,172 +37,14 @@ import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import Quill.Check (Info(..), TypeInfo(..), resolveType')
+import Quill.Check (Info(..))
 import qualified Quill.Check as Check
-import Quill.Syntax (TableItem, Type)
+import Quill.Syntax (Type)
 import qualified Quill.Syntax as Syntax
 
 data CompileError
   = ExpectedQuery (Syntax.Expr Info String)
   deriving (Show)
-
-compileDecls ::
-  Check.DeclEnv ->
-  Vector (Syntax.Decl Info TypeInfo) ->
-  Builder.Builder
-compileDecls env ds =
-  fold . intersperse "\n\n" $
-  foldr
-    (\d ->
-      case d of
-        Syntax.Table name items -> (:) $ compileTable env name items
-        Syntax.Type{} -> id
-        Syntax.Query{} -> error "TODO: compile query"
-        Syntax.Function{} -> error "TODO: compile function"
-    )
-    []
-    ds
-
-renderConstraint :: Maybe Syntax.Language -> Syntax.Constraint -> Maybe Text
-renderConstraint l c =
-  case c of
-    Syntax.AutoIncrement ->
-      case l of
-        Just Syntax.Postgresql -> Nothing
-        Nothing -> Just "AUTO_INCREMENT"
-    Syntax.PrimaryKey -> Just "PRIMARY KEY"
-    Syntax.Other t -> Just t
-
-compileColumn ::
-  Check.DeclEnv ->
-  Check.TableInfo ->
-  Text ->
-  Type TypeInfo ->
-  [Syntax.Constraint] ->
-  Builder.Builder
-compileColumn env tableInfo colName colTy cons =
-  let
-    colName' = Builder.byteString $ encodeUtf8 colName
-    cons' =
-      if null cons
-      then mempty
-      else
-        (" " <>) . fold . intersperse " " $
-        foldr
-          (\c ->
-             case renderConstraint (Check._deLanguage env) c of
-               Nothing -> id
-               Just c' -> (:) (Builder.byteString $ encodeUtf8 c')
-          )
-          []
-          cons
-    withNameAndCons x = colName' <> " " <> x <> cons'
-  in
-  case colTy of
-    Syntax.TRecord _ _ ->
-      let
-        m_colInfo =
-          Check.flattenColumnInfo . snd <$>
-          Vector.find ((colName ==) . fst) (Check._tiColumnInfo tableInfo)
-       in
-        case m_colInfo of
-          Nothing -> error "column info not found"
-          Just colInfo ->
-            fold . intersperse ",\n" $
-            foldr
-              (\(n, ty) -> (:) $ compileColumn env tableInfo n ty cons)
-              []
-              colInfo
-    Syntax.TInt _ ->
-      withNameAndCons $
-      case (Check._deLanguage env, Syntax.AutoIncrement `elem` cons) of
-        (Just Syntax.Postgresql, True) -> "serial"
-        _ -> "int NOT NULL"
-    Syntax.TUnit _ -> withNameAndCons "blob NOT NULL"
-    Syntax.TBool _ -> withNameAndCons "boolean NOT NULL"
-    Syntax.TMany _ _ -> error "todo: many as column types???"
-    Syntax.TOptional _ _ -> error "todo: optional as column types???"
-    Syntax.TQuery _ _ -> error "todo: query as column types???"
-    Syntax.TName _ n ->
-      case resolveType' env n of
-        Left{} -> undefined
-        Right ty' -> compileColumn env tableInfo colName ty' cons
-
-compileTable ::
-  Check.DeclEnv ->
-  Text ->
-  Vector (TableItem TypeInfo) ->
-  Builder.Builder
-compileTable env tableName items =
-  "CREATE TABLE " <> Builder.byteString (encodeUtf8 tableName) <> "(\n" <>
-  fold
-    (intersperse ",\n" $
-     (\colName ->
-        case Map.lookup colName colInfos of
-          Nothing -> undefined
-          Just (ty, cons) ->
-            case Map.lookup tableName (Check._deTables env) of
-              Nothing -> undefined
-              Just tableInfo -> compileColumn env tableInfo colName ty cons
-     ) <$>
-     colNames
-  ) <>
-  fold
-    (intersperse ",\n" $
-     (\(n, args) ->
-        Builder.byteString (encodeUtf8 n) <> "(" <>
-        fold
-          (intersperse ", " $
-           foldr
-             ((:) . Builder.byteString . encodeUtf8)
-             []
-             args
-          ) <>
-        ")"
-     ) <$> constraints
-    ) <>
-  "\n);"
-  where
-    (colNames, colInfos, constraints) = gatherConstraints items
-
-    gatherConstraints ::
-      Vector (TableItem TypeInfo) ->
-      ( [Text]
-      , Map
-          Text -- column name
-          ( Type TypeInfo -- column type
-          , [Syntax.Constraint] -- unary constraints
-          )
-      , [(Text, Vector Text)] -- higher arity constraints
-      )
-    gatherConstraints =
-      foldl'
-        (\(cols, info, constrs) i ->
-           case i of
-             Syntax.Field name ty ->
-               ( cols ++ [name]
-               , Map.insert name (ty, []) info
-               , constrs
-               )
-             Syntax.Constraint constr args
-               | Vector.length args == 1 ->
-                 ( cols
-                 , Map.adjust
-                     (\(ty, cs) -> (ty, cs ++ [ constr ]))
-                     (args Vector.! 0)
-                     info
-                 , constrs
-                 )
-               | otherwise ->
-                 ( cols
-                 , info
-                 , constrs ++
-                   case renderConstraint (Check._deLanguage env) constr of
-                     Nothing -> []
-                     Just c -> [(c, args)]
-                 )
-        )
-        ([], Map.empty, [])
 
 parens :: Builder.Builder -> Builder.Builder
 parens a = "(" <> a <> ")"
@@ -454,3 +303,83 @@ expr env f e =
     Syntax.EQ a b -> Eq <$> expr env f a <*> expr env f b
     Syntax.NOT a -> Not <$> expr env f a
     _ -> Subquery <$> query env f e
+
+compileType :: Type a -> ByteString
+compileType ty =
+  case ty of
+    Syntax.TRecord{} -> error "SQL.compileType: found TRecord"
+    Syntax.TUnit{} -> error "SQL.compileType: found TUnit"
+    Syntax.TBool{} -> "BOOLEAN"
+    Syntax.TMany{} -> error "SQL.compileType: found TMany"
+    Syntax.TQuery{} -> error "SQL.compileType: found TMany"
+    Syntax.TOptional{} -> error "SQL.compileType: found TOptional"
+    Syntax.TName{} -> error "SQL.compileType: found TOptional"
+    Syntax.TInt{} -> "INTEGER"
+
+compileTable :: Text -> Check.TableInfo -> Table
+compileTable tableName tableInfo =
+  let
+    (_, colInfos, constraints) = gatherConstraints $ Check._tiItems tableInfo
+  in
+    Table
+      (encodeUtf8 tableName)
+      (fmap
+          (\(n, ty) ->
+            Column
+            { name = encodeUtf8 n
+            , type_ = compileType ty
+            , notNull = True
+            , autoIncrement =
+                maybe False ((Syntax.AutoIncrement `elem`) . snd) $
+                Map.lookup n colInfos
+            }
+          ) .
+          Check.flattenColumnInfo . snd =<<
+        Check._tiColumnInfo tableInfo
+      )
+      ((\(c, args) ->
+          Constraint'other . Other (encodeUtf8 c) $
+          encodeUtf8 <$> args
+        ) <$>
+        Vector.fromList constraints
+      )
+  where
+    gatherConstraints ::
+      Vector (Syntax.TableItem Check.TypeInfo) ->
+      ( [Text]
+      , Map
+          Text -- column name
+          ( Type Check.TypeInfo -- column type
+          , [Syntax.Constraint] -- unary constraints
+          )
+      , [(Text, Vector Text)] -- higher arity constraints
+      )
+    gatherConstraints =
+      foldl'
+        (\(cols, info, constrs) i ->
+           case i of
+             Syntax.Field fieldName ty ->
+               ( cols ++ [fieldName]
+               , Map.insert fieldName (ty, []) info
+               , constrs
+               )
+             Syntax.Constraint constr args
+               | Vector.length args == 1 ->
+                 ( cols
+                 , Map.adjust
+                     (\(ty, cs) -> (ty, cs ++ [ constr ]))
+                     (args Vector.! 0)
+                     info
+                 , constrs
+                 )
+               | otherwise ->
+                 ( cols
+                 , info
+                 , constrs ++
+                   case constr of
+                     Syntax.Other n -> [(n, args)]
+                     Syntax.PrimaryKey -> [("PRIMARY KEY", args)]
+                     Syntax.AutoIncrement -> []
+                 )
+        )
+        ([], Map.empty, [])
