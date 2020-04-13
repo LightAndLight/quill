@@ -28,6 +28,8 @@ module Quill.Check
   , DeclError(..)
   , checkDecl
   , checkDecls
+    -- * Misc
+  , mapError
   )
 where
 
