@@ -20,6 +20,7 @@ library
                      , Quill.Marshall
                      , Quill.Normalise
                      , Quill.Parser
+                     , Quill.Parser.Migration
                      , Quill.Query
                      , Quill.SQL
                      , Quill.Syntax

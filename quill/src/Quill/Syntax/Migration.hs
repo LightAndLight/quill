@@ -6,20 +6,23 @@ import Quill.Syntax (Constraint, TableItem, Type)
 
 data FieldChange
   = DropField Text
-  -- | Alter 
+  -- | Alter
   | AddField Text (Type ())
   | AddConstraint
       Constraint
       (Vector Text)
+  deriving (Eq, Show)
 
 data Command
   = CreateTable
       Text
       (Vector (TableItem ()))
-  | AlterTable Text FieldChange
+  | AlterTable Text (Vector FieldChange)
+  deriving (Eq, Show)
 
 data Migration
   = Migration
-  { _mParents :: Maybe (Vector Text)
+  { _mName :: Text
+  , _mParents :: Maybe (Vector Text)
   , _mCommands :: Vector Command
-  }
+  } deriving (Eq, Show)
