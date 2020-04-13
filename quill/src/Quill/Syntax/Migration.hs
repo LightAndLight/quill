@@ -20,9 +20,11 @@ data Command
   | AlterTable Text (Vector FieldChange)
   deriving (Eq, Show)
 
+newtype Name = Name Text deriving (Eq, Ord, Show)
+
 data Migration
   = Migration
-  { _mName :: Text
-  , _mParents :: Maybe (Vector Text)
+  { _mName :: Name
+  , _mParents :: Maybe (Vector Name)
   , _mCommands :: Vector Command
   } deriving (Eq, Show)

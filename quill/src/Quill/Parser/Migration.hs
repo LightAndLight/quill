@@ -2,13 +2,13 @@
 module Quill.Parser.Migration where
 
 import Control.Applicative ((<|>))
-import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as Vector
 import Text.Trifecta hiding (parseString, eof)
 
 import qualified Quill.Parser as Parser
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
+import qualified Quill.Syntax.Migration as Migration (Name(..))
 
 migration :: (Monad m, TokenParsing m) => m Migration
 migration =
@@ -54,10 +54,10 @@ command =
          AddField <$> Parser.variable <* symbolic ':' <*> Parser.type_
         )
 
-migrationName :: (Monad m, TokenParsing m) => m Text
+migrationName :: (Monad m, TokenParsing m) => m Migration.Name
 migrationName =
   token $
-  Text.pack <$>
+  Migration.Name . Text.pack <$>
   between
     (char '"')
     (char '"')

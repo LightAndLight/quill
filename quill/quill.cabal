@@ -17,6 +17,7 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Quill.Backend
                      , Quill.Check
+                     , Quill.Check.Migration
                      , Quill.Marshall
                      , Quill.Normalise
                      , Quill.Parser
