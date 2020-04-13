@@ -8,15 +8,18 @@ module Quill.Check.Migration
   , MigrationEnv
   , emptyMigrationEnv
   , checkMigration
+  , checkMigrations
   )
 where
 
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
-import Data.Foldable (foldl', foldlM)
+import Data.Foldable (find, foldl', foldlM)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -41,24 +44,28 @@ newtype Table = Table { unTable :: Vector (Tracked TableItem) }
 
 data MigrationEnv
   = MigrationEnv
-  { _meNames :: Set Migration.Name
+  { _meChecked :: Set Migration.Name
+  , _mePath :: Seq Migration.Name
   , _meTables :: Map Text (Tracked Table)
   }
 
 emptyMigrationEnv :: MigrationEnv
 emptyMigrationEnv =
   MigrationEnv
-  { _meNames = mempty
+  { _meChecked = mempty
+  , _mePath = mempty
   , _meTables = mempty
   }
 
 data MigrationError
   = DuplicateMigration Migration.Name
+  | MigrationNotFound Migration.Name
   | TableAlreadyExists Text
-  | TableDoesn'tExist Text
+  | TableNotFound Text
   | FieldNotFound Text
   | FieldAlreadyExists Text
   | ConstraintError (ConstraintError ())
+  | CycleDetected (Seq Migration.Name)
   deriving Show
 
 checkCommand ::
@@ -86,7 +93,7 @@ checkCommand currentMigration env c =
           fields
       pure $ env { _meTables = Map.insert tableName (track table) $ _meTables env }
     AlterTable tableName changes -> do
-      entry <- maybe (throwError $ TableDoesn'tExist tableName) pure $ Map.lookup tableName (_meTables env)
+      entry <- maybe (throwError $ TableNotFound tableName) pure $ Map.lookup tableName (_meTables env)
       entry' <- for entry $ \entry' -> foldlM (runChange tableName) entry' changes
       pure $ env { _meTables = Map.insert tableName entry' $ _meTables env }
   where
@@ -172,9 +179,32 @@ checkMigration ::
   Migration ->
   m MigrationEnv
 checkMigration check env (Migration name m_parents commands) = do
-  when (Set.member name $ _meNames env) . throwError $ DuplicateMigration name
+  when (Set.member name $ _meChecked env) . throwError $ DuplicateMigration name
   env' <-
     case m_parents of
       Nothing -> pure env
       Just parents -> foldlM check env parents
-  foldlM (checkCommand name) env' commands
+  env'' <- foldlM (checkCommand name) env' commands
+  pure $ env'' { _meChecked = Set.insert name $ _meChecked env'' }
+
+checkMigrations ::
+  MonadError MigrationError m =>
+  Map Migration.Name Migration ->
+  MigrationEnv ->
+  Migration.Name ->
+  m MigrationEnv
+checkMigrations ms = checkName
+  where
+    checkName e n =
+      case Map.lookup n ms of
+        Nothing -> throwError $ MigrationNotFound n
+        Just m -> do
+          when (Maybe.isJust $ find (n ==) (_mePath e)) . throwError $ CycleDetected (_mePath e)
+          let path = _mePath e
+          e' <- checkMigration check (e { _mePath = path Seq.|> n }) m
+          pure $ e' { _mePath = path }
+    check e n =
+      if Set.member n (_meChecked e)
+      then pure e
+      else checkName e n
+
