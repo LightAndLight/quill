@@ -28,7 +28,7 @@ migration =
       migrationName <*>
       braces
         ((,) <$>
-         (symbol "parents" *> symbolic ':' *> brackets (migrationName `sepBy` comma)) <*>
+         (symbol "parents" *> symbolic ':' *> brackets (migrationName `sepBy` comma)) <* comma <*>
          (symbol "commands" *> symbolic ':' *> brackets (command `sepBy` comma))
         )
 

@@ -8,8 +8,10 @@ import Test.Hspec
 
 import Quill.Parser (Parser)
 import qualified Quill.Parser as Parser
+import qualified Quill.Parser.Migration as Parser (migration)
 import Quill.Syntax (Constraint(..), Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
+import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
 
 data ParseTest where
   ParseTest ::
@@ -101,3 +103,101 @@ parseTests = do
     , parse_parser = (Parser.expr (const Nothing) <* Parser.eof) :: Parser (Expr () Void)
     , parse_output = Project (Project (Name "a") "b") "c"
     }
+  describe "migration" $ do
+    it "1" $
+      parseTest $
+      ParseTest
+      { parse_input =
+        [ "initial migration \"20200413-testing\" {"
+        , "  commands: ["
+        , "    create table TableA {"
+        , "      a : Int, PK(a),"
+        , "      b : Bool"
+        , "    },"
+        , "    create table TableB {"
+        , "      c : Int, PK(c),"
+        , "      d : Bool"
+        , "    }"
+        , "  ]"
+        , "}"
+        ]
+      , parse_parser = Parser.migration
+      , parse_output =
+        Migration
+          "20200413-testing"
+          Nothing
+          [ CreateTable
+              "TableA"
+              [ Field "a" $ TInt (), Constraint PrimaryKey ["a"]
+              , Field "b" $ TBool ()
+              ]
+          , CreateTable
+              "TableB"
+              [ Field "c" $ TInt (), Constraint PrimaryKey ["c"]
+              , Field "d" $ TBool ()
+              ]
+          ]
+      }
+    it "2" $
+      parseTest $
+      ParseTest
+      { parse_input =
+        [ "migration \"20200413-testing\" {"
+        , "  parents: [\"20200413-prev1\", \"20200413-prev2\"],"
+        , "  commands: ["
+        , "    create table TableA {"
+        , "      a : Int, PK(a),"
+        , "      b : Bool"
+        , "    },"
+        , "    create table TableB {"
+        , "      c : Int, PK(c),"
+        , "      d : Bool"
+        , "    }"
+        , "  ]"
+        , "}"
+        ]
+      , parse_parser = Parser.migration
+      , parse_output =
+        Migration
+          "20200413-testing"
+          (Just ["20200413-prev1", "20200413-prev2"])
+          [ CreateTable
+              "TableA"
+              [ Field "a" $ TInt (), Constraint PrimaryKey ["a"]
+              , Field "b" $ TBool ()
+              ]
+          , CreateTable
+              "TableB"
+              [ Field "c" $ TInt (), Constraint PrimaryKey ["c"]
+              , Field "d" $ TBool ()
+              ]
+          ]
+      }
+    it "3" $
+      parseTest $
+      ParseTest
+      { parse_input =
+        [ "migration \"20200413-testing\" {"
+        , "  parents: [\"20200413-prev1\"],"
+        , "  commands: ["
+        , "    alter table TableB {"
+        , "      add c : Int,"
+        , "      add constraint PK(c),"
+        , "      drop d"
+        , "    }"
+        , "  ]"
+        , "}"
+        ]
+      , parse_parser = Parser.migration
+      , parse_output =
+        Migration
+          "20200413-testing"
+          (Just ["20200413-prev1"])
+          [ AlterTable
+              "TableB"
+              [ AddField "c" $ TInt ()
+              , AddConstraint PrimaryKey ["c"]
+              , DropField "d"
+              ]
+          ]
+      }

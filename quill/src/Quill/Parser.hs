@@ -264,8 +264,11 @@ constraint =
 
 tableItem :: (Monad m, TokenParsing m) => m (TableItem ())
 tableItem =
-  Field <$> variable <* symbolic ':' <*> type_ <|>
-  Constraint <$> constraint <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
+  (field <?> "field declaration") <|>
+  (constr <?> "field constraint")
+  where
+    field = Field <$> variable <* symbolic ':' <*> type_
+    constr = Constraint <$> constraint <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
 
 decl :: (Monad m, TokenParsing m) => m (Decl () ())
 decl =
