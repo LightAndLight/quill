@@ -33,7 +33,6 @@ configParser =
 main :: IO ()
 main = do
   config <- execParser (info (helper <*> configParser) fullDesc)
-  putStrLn $ "Port: " <> _cfgPort config
   addr <-
     head <$>
     Socket.getAddrInfo
@@ -53,9 +52,7 @@ main = do
     )
     Socket.close
     (\sock -> do
-       putStrLn "Connecting..."
        Socket.connect sock (Socket.addrAddress addr)
-       putStrLn "Connected!"
        runEcho sock
     )
 

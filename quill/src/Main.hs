@@ -73,7 +73,7 @@ main = do
        , Socket.addrSocketType = Socket.Stream
        }
       )
-      (Just "127.0.0.1")
+      Nothing
       (Just "0")
   bracket
     (Socket.socket
@@ -87,21 +87,12 @@ main = do
        port <-
          (\case; Socket.SockAddrInet port _ -> pure port; _ -> error "Got non-IPv4 socket address") =<<
          Socket.getSocketName init_sock
-       print =<< Socket.getSocketName init_sock
-       putStrLn "Listening..."
        Socket.listen init_sock 5
-       putStrLn "Forking..."
        forkBackend port config
        bracket
-         (do
-            putStrLn "Waiting for connection..."
-            fst <$> Socket.accept init_sock
-         )
+         (fst <$> Socket.accept init_sock)
          Socket.close
-         (\sock -> do
-            putStrLn "Starting server..."
-            server (_cfgCommand config) sock
-         )
+         (server $ _cfgCommand config)
     )
 
 forkBackend :: Socket.PortNumber -> Config -> IO ()
