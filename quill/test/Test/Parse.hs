@@ -12,6 +12,7 @@ import qualified Quill.Parser.Migration as Parser (migration)
 import Quill.Syntax (Constraint(..), Decl(..), Expr(..), TableItem(..), Type(..))
 import qualified Quill.Syntax as Syntax
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
+import qualified Quill.Syntax.Migration as Migration (Name(..))
 
 data ParseTest where
   ParseTest ::
@@ -124,7 +125,7 @@ parseTests = do
       , parse_parser = Parser.migration
       , parse_output =
         Migration
-          "20200413-testing"
+          (Migration.Name "20200413-testing")
           Nothing
           [ CreateTable
               "TableA"
@@ -159,8 +160,12 @@ parseTests = do
       , parse_parser = Parser.migration
       , parse_output =
         Migration
-          "20200413-testing"
-          (Just ["20200413-prev1", "20200413-prev2"])
+          (Migration.Name "20200413-testing")
+          (Just
+           [ Migration.Name "20200413-prev1"
+           , Migration.Name "20200413-prev2"
+           ]
+          )
           [ CreateTable
               "TableA"
               [ Field "a" $ TInt (), Constraint PrimaryKey ["a"]
@@ -191,8 +196,8 @@ parseTests = do
       , parse_parser = Parser.migration
       , parse_output =
         Migration
-          "20200413-testing"
-          (Just ["20200413-prev1"])
+          (Migration.Name "20200413-testing")
+          (Just [Migration.Name "20200413-prev1"])
           [ AlterTable
               "TableB"
               [ AddField "c" $ TInt ()

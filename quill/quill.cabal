@@ -80,6 +80,7 @@ test-suite quill-tests
   main-is:             Main.hs
   other-modules:       Test.Compile
                      , Test.Check
+                     , Test.Check.Migration
                      , Test.Parse
                      , Test.Query
   build-depends:       base ^>=4.12.0.0
