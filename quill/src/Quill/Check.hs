@@ -23,6 +23,8 @@ module Quill.Check
   , DeclEnv(..)
   , emptyDeclEnv
   , toQueryEnv
+  , ConstraintError(..)
+  , checkConstraint
   , DeclError(..)
   , checkDecl
   , checkDecls
@@ -692,12 +694,16 @@ data QueryEntry
   , _qeBody :: Scope Int (Expr Info) Void
   } deriving Show
 
-data DeclError t t'
-  = UnknownConstraint Text
-  | ConstraintArgsMismatch Int Int
-  | NotEnumerable (Type t')
-  | MultiplePrimaryKeys
+data ConstraintError t'
+  = ConstraintArgsMismatch Int Int
   | FieldNotInScope Text
+  | UnknownConstraint Text
+  | NotEnumerable (Type t')
+  | MultiplePrimaryKeys Text
+  deriving Show
+
+data DeclError t t'
+  = ConstraintError (ConstraintError t')
   | FieldAlreadyDefined Text
   | TypeAlreadyDefined Text
   | TableAlreadyDefined Text
@@ -713,21 +719,42 @@ isEnumerable ty = ty `Set.member` tys
 
 data TableItemState t
   = TableItemState
-  { hasPrimaryKey :: Bool
-  , fieldsSeen :: Map Text (Type t)
+  { _hasPrimaryKey :: Bool
+  , _fieldsSeen :: Map Text (Type t)
   }
+
+checkConstraint ::
+  MonadError (ConstraintError t') m =>
+  Text -> -- table name
+  Map Text (Type t') -> -- field types
+  Bool -> -- does the table have a primary key?
+  Syntax.Constraint ->
+  Vector Text ->
+  m ()
+checkConstraint tableName fieldTypes hasPrimaryKey constr args =
+  case constr of
+    Syntax.AutoIncrement -> do
+      let argsLength = Vector.length args
+      unless (argsLength == 1) . throwError $ ConstraintArgsMismatch 1 argsLength
+      let arg = args Vector.! 0
+      argTy <- maybe (throwError $ FieldNotInScope arg) pure $ Map.lookup arg fieldTypes
+      unless (isEnumerable $ () <$ argTy) . throwError $ NotEnumerable argTy
+    Syntax.PrimaryKey ->
+      when hasPrimaryKey . throwError $ MultiplePrimaryKeys tableName
+    Syntax.Other name -> throwError $ UnknownConstraint name
 
 checkTableItem ::
   ( MonadError (DeclError t t') m
   , MonadState (TableItemState t') m
   ) =>
   DeclEnv ->
+  Text ->
   TableItem t' ->
   m (TableItem TypeInfo)
-checkTableItem env item =
+checkTableItem env tableName item =
   case item of
     Syntax.Field name ty -> do
-      m_ty <- gets (Map.lookup name . fieldsSeen)
+      m_ty <- gets (Map.lookup name . _fieldsSeen)
       case m_ty of
         Nothing -> do
           let
@@ -743,26 +770,17 @@ checkTableItem env item =
               }
           ty' <- mapError TypeError $ mkTypeInfo queryEnv (Just Column) ty
           mapError TypeError $ checkType ty'
-          modify $ \s -> s { fieldsSeen = Map.insert name ty (fieldsSeen s) }
+          modify $ \s -> s { _fieldsSeen = Map.insert name ty (_fieldsSeen s) }
           pure $ Syntax.Field name ty'
         Just{} -> throwError $ FieldAlreadyDefined name
-    Syntax.Constraint constr args ->
+    Syntax.Constraint constr args -> do
+      fieldsSeen <- gets _fieldsSeen
+      hasPrimaryKey <- gets _hasPrimaryKey
+      mapError ConstraintError $ checkConstraint tableName fieldsSeen hasPrimaryKey constr args
       case constr of
-        Syntax.AutoIncrement -> do
-          let argsLength = Vector.length args
-          unless (argsLength == 1) . throwError $ ConstraintArgsMismatch 1 argsLength
-          let arg = args Vector.! 0
-          argTy <-
-            maybe (throwError $ FieldNotInScope arg) pure =<<
-            gets (Map.lookup arg . fieldsSeen)
-          unless (isEnumerable $ () <$ argTy) . throwError $ NotEnumerable argTy
-          pure $ Syntax.Constraint Syntax.AutoIncrement args
-        Syntax.PrimaryKey -> do
-          b <- gets hasPrimaryKey
-          when b . throwError $ MultiplePrimaryKeys
-          modify $ \s -> s { hasPrimaryKey = True }
-          pure $ Syntax.Constraint Syntax.PrimaryKey args
-        Syntax.Other name -> throwError $ UnknownConstraint name
+        Syntax.PrimaryKey -> modify $ \s -> s { _hasPrimaryKey = True }
+        _ -> pure ()
+      pure $ Syntax.Constraint constr args
 
 checkDeclArg ::
   ( MonadError (DeclError t t') m
@@ -798,15 +816,15 @@ checkDecl ::
   m (Decl Info TypeInfo)
 checkDecl env decl =
   case decl of
-    Syntax.Table name items -> do
-      case Map.lookup name (_deTables env) of
+    Syntax.Table tableName items -> do
+      case Map.lookup tableName (_deTables env) of
         Nothing -> pure ()
-        Just{} -> throwError $ TableAlreadyDefined name
+        Just{} -> throwError $ TableAlreadyDefined tableName
       items' <-
         evalStateT
-          (traverse (checkTableItem env) items)
+          (traverse (checkTableItem env tableName) items)
           (TableItemState False mempty)
-      pure $ Syntax.Table name items'
+      pure $ Syntax.Table tableName items'
     Syntax.Type name ty ->
       case Map.lookup name (_deTypes env) of
         Nothing -> do
