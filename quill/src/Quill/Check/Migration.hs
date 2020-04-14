@@ -27,7 +27,6 @@ import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
-import Data.Traversable (for)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import GHC.Exts (IsList)
@@ -100,37 +99,39 @@ checkCommand currentMigration env c =
           fields
       pure $ env { _meTables = Map.insert tableName (track table) $ _meTables env }
     AlterTable tableName changes -> do
-      entry <- maybe (throwError $ TableNotFound tableName) pure $ Map.lookup tableName (_meTables env)
-      entry' <- for entry $ \entry' -> foldlM (runChange tableName) entry' changes
+      entry <-
+        maybe (throwError $ TableNotFound tableName) pure $
+        Map.lookup tableName (_meTables env)
+      entry' <- foldlM (runChange tableName) entry changes
       pure $ env { _meTables = Map.insert tableName entry' $ _meTables env }
   where
     track x = Tracked { origin = currentMigration, unTracked = x }
 
     dropField ::
-      Table ->
+      Tracked Table ->
       Text ->
-      m Table
-    dropField table fieldName =
+      m (Tracked Table)
+    dropField (unTracked -> table) fieldName =
       let
         cond = (\case; Field n _ -> n == fieldName; _ -> False) . unTracked
       in
         case Vector.find cond (unTable table) of
           Nothing -> throwError $ FieldNotFound fieldName
-          Just{} -> pure . Table $ Vector.filter (not . cond) (unTable table)
+          Just{} -> pure . track . Table $ Vector.filter (not . cond) (unTable table)
 
     addField ::
-      Table ->
+      Tracked Table ->
       Text ->
       Type () ->
-      m Table
-    addField table fieldName fieldType =
+      m (Tracked Table)
+    addField (unTracked -> table) fieldName fieldType =
       let
         cond = (\case; Field n _ -> n == fieldName; _ -> False) . unTracked
       in
         case Vector.find cond (unTable table) of
           Just{} -> throwError $ FieldAlreadyExists fieldName
           Nothing ->
-            pure . Table $
+            pure . track . Table $
             Vector.snoc
               (unTable table)
               (Tracked currentMigration $
@@ -139,11 +140,11 @@ checkCommand currentMigration env c =
 
     addConstraint ::
       Text ->
-      Table ->
+      Tracked Table ->
       Constraint ->
       Vector Text ->
-      m Table
-    addConstraint tableName table constr args = do
+      m (Tracked Table)
+    addConstraint tableName (unTracked -> table) constr args = do
       mapError ConstraintError $
         checkConstraint
           tableName
@@ -163,16 +164,16 @@ checkCommand currentMigration env c =
           )
           constr
           args
-      pure . Table $
+      pure . track . Table $
         Vector.snoc
           (unTable table)
           (Tracked currentMigration $ Constraint constr args)
 
     runChange ::
       Text ->
-      Table ->
+      Tracked Table ->
       FieldChange ->
-      m Table
+      m (Tracked Table)
     runChange tableName table change =
       case change of
         DropField fieldName -> dropField table fieldName

@@ -412,3 +412,84 @@ successTests = do
             }
             )
       }
+  it "initial migration - create and alter" $
+    let
+      m_a = Migration.Name "a"
+    in
+      check $
+      Check
+      { _check_input =
+        [ "initial migration \"a\" {"
+        , "  commands: ["
+        , "    create table Table1 {"
+        , "      id : Int, PK(id),"
+        , "      b : Bool"
+        , "    },"
+        , "    alter table Table1 {"
+        , "      drop b"
+        , "    }"
+        , "  ]"
+        , "}"
+        ]
+      , _check_root = m_a
+      , _check_outcome =
+        \output ->
+          output `shouldBe`
+          Right
+            (Check.emptyMigrationEnv
+            { _meChecked = [m_a]
+            , _meTables =
+              [ ( "Table1"
+                , Check.Tracked m_a $
+                  [ Tracked m_a $ Field "id" (Tracked m_a $ TInt ())
+                  , Tracked m_a $ Constraint PrimaryKey ["id"]
+                  ]
+                )
+              ]
+            }
+            )
+      }
+  it "migration - create and alter" $
+    let
+      m_a = Migration.Name "a"
+      m_b = Migration.Name "b"
+    in
+      check $
+      Check
+      { _check_input =
+        [ "initial migration \"a\" {"
+        , "  commands: ["
+        , "    create table Table1 {"
+        , "      id : Int, PK(id),"
+        , "      b : Bool"
+        , "    }"
+        , "  ]"
+        , "}"
+        , ""
+        , "migration \"b\" {"
+        , "  parent: \"a\","
+        , "  commands: ["
+        , "    alter table Table1 {"
+        , "      drop b"
+        , "    }"
+        , "  ]"
+        , "}"
+        ]
+      , _check_root = m_b
+      , _check_outcome =
+        \output ->
+          output `shouldBe`
+          Right
+            (Check.emptyMigrationEnv
+            { _meChecked = [m_a, m_b]
+            , _meTables =
+              [ ( "Table1"
+                , Check.Tracked m_b $
+                  [ Tracked m_a $ Field "id" (Tracked m_a $ TInt ())
+                  , Tracked m_a $ Constraint PrimaryKey ["id"]
+                  ]
+                )
+              ]
+            }
+            )
+      }
