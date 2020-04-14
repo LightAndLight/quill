@@ -25,6 +25,6 @@ newtype Name = Name Text deriving (Eq, Ord, Show)
 data Migration
   = Migration
   { _mName :: Name
-  , _mParents :: Maybe (Vector Name)
+  , _mParent :: Maybe Name
   , _mCommands :: Vector Command
   } deriving (Eq, Show)

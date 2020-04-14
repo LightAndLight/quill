@@ -185,11 +185,11 @@ checkMigration ::
   MigrationEnv ->
   Migration ->
   m MigrationEnv
-checkMigration check env (Migration name m_parents commands) = do
+checkMigration check env (Migration name m_parent commands) = do
   env' <-
-    case m_parents of
+    case m_parent of
       Nothing -> pure env
-      Just parents -> foldlM check env parents
+      Just parent -> check env parent
   env'' <- foldlM (checkCommand name) env' commands
   pure $ env'' { _meChecked = Set.insert name $ _meChecked env'' }
 

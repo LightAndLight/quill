@@ -47,7 +47,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"a\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: []"
       , "}"
       ]
@@ -63,7 +63,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: []"
       , "}"
       ]
@@ -79,7 +79,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\", \"b\"],"
+      , "  parent: \"b\","
       , "  commands: []"
       , "}"
       ]
@@ -95,17 +95,17 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\", \"d\"],"
+      , "  parent: \"d\","
       , "  commands: []"
       , "}"
       , ""
       , "migration \"c\" {"
-      , "  parents: [\"b\"],"
+      , "  parent: \"b\","
       , "  commands: []"
       , "}"
       , ""
       , "migration \"d\" {"
-      , "  parents: [\"c\"],"
+      , "  parent: \"c\","
       , "  commands: []"
       , "}"
       ]
@@ -128,7 +128,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: ["
       , "    create table Table1 {"
       , "      b : Bool"
@@ -155,7 +155,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: ["
       , "    alter table Table2 {"
       , "      add b : Bool"
@@ -182,7 +182,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: ["
       , "    alter table Table1 {"
       , "      drop b"
@@ -195,104 +195,6 @@ failureTests = do
       \output ->
         output `shouldBe`
         Left (Check.FieldNotFound "b")
-    }
-  it "dependencies determine environment" $
-    check $
-    Check
-    { _check_input =
-      [ "initial migration \"a_1\" {"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "initial migration \"a_2\" {"
-      , "  commands: ["
-      , "    alter table Table1 {"
-      , "      add constraint PK(a)"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"b\" {"
-      , "  parents: [\"a_1\", \"a_2\"],"
-      , "  commands: []"
-      , "}"
-      ]
-    , _check_root = Migration.Name "b"
-    , _check_outcome =
-      \output ->
-        output `shouldBe`
-        Left (Check.TableNotFound "Table1")
-    }
-  it "initial migrations can conflict" $
-    check $
-    Check
-    { _check_input =
-      [ "initial migration \"a_1\" {"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "initial migration \"a_2\" {"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"b\" {"
-      , "  parents: [\"a_1\", \"a_2\"],"
-      , "  commands: []"
-      , "}"
-      ]
-    , _check_root = Migration.Name "b"
-    , _check_outcome =
-      \output ->
-        output `shouldBe`
-        Left (Check.TableAlreadyExists "Table1")
-    }
-  it "initial migrations can conflict with migrations" $
-    check $
-    Check
-    { _check_input =
-      [ "initial migration \"a_1\" {"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "initial migration \"x\" {"
-      , "  commands: []"
-      , "}"
-      , ""
-      , "migration \"a_2\" {"
-      , "  parents: [\"x\"],"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"b\" {"
-      , "  parents: [\"a_1\", \"a_2\"],"
-      , "  commands: []"
-      , "}"
-      ]
-    , _check_root = Migration.Name "b"
-    , _check_outcome =
-      \output ->
-        output `shouldBe`
-        Left (Check.TableAlreadyExists "Table1")
     }
   it "field already exists" $
     check $
@@ -307,7 +209,7 @@ failureTests = do
       , "}"
       , ""
       , "migration \"b\" {"
-      , "  parents: [\"a\"],"
+      , "  parent: \"a\","
       , "  commands: ["
       , "    alter table Table1 {"
       , "      add a : Int"
@@ -320,47 +222,6 @@ failureTests = do
       \output ->
         output `shouldBe`
         Left (Check.FieldAlreadyExists "a")
-    }
-  it "conflicting diamond" $
-    check $
-    Check
-    { _check_input =
-      [ "initial migration \"a\" {"
-      , "  commands: ["
-      , "    create table Table1 {"
-      , "      a : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"b_1\" {"
-      , "  parents: [\"a\"],"
-      , "  commands: ["
-      , "    alter table Table1 {"
-      , "      add b : Int"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"b_2\" {"
-      , "  parents: [\"a\"],"
-      , "  commands: ["
-      , "    alter table Table1 {"
-      , "      add b : Bool"
-      , "    }"
-      , "  ]"
-      , "}"
-      , ""
-      , "migration \"c\" {"
-      , "  parents: [\"b_1\", \"b_2\"],"
-      , "  commands: []"
-      , "}"
-      ]
-    , _check_root = Migration.Name "c"
-    , _check_outcome =
-      \output ->
-        output `shouldBe`
-        Left (Check.FieldAlreadyExists "b")
     }
   describe "constraint error" $ do
     it "arg mismatch" $
@@ -376,7 +237,7 @@ failureTests = do
         , "}"
         , ""
         , "migration \"b\" {"
-        , "  parents: [\"a\"],"
+        , "  parent: \"a\","
         , "  commands: ["
         , "    alter table Table1 {"
         , "      add constraint AUTO_INCREMENT(a, b)"
@@ -403,7 +264,7 @@ failureTests = do
         , "}"
         , ""
         , "migration \"b\" {"
-        , "  parents: [\"a\"],"
+        , "  parent: \"a\","
         , "  commands: ["
         , "    alter table Table1 {"
         , "      add constraint PK(a, b)"
@@ -430,7 +291,7 @@ failureTests = do
         , "}"
         , ""
         , "migration \"b\" {"
-        , "  parents: [\"a\"],"
+        , "  parent: \"a\","
         , "  commands: ["
         , "    alter table Table1 {"
         , "      add constraint Blaaah(a)"
@@ -457,7 +318,7 @@ failureTests = do
         , "}"
         , ""
         , "migration \"b\" {"
-        , "  parents: [\"a\"],"
+        , "  parent: \"a\","
         , "  commands: ["
         , "    alter table Table1 {"
         , "      add constraint AUTO_INCREMENT(a)"
@@ -484,7 +345,7 @@ failureTests = do
         , "}"
         , ""
         , "migration \"b\" {"
-        , "  parents: [\"a\"],"
+        , "  parent: \"a\","
         , "  commands: ["
         , "    alter table Table1 {"
         , "      add b : Int,"

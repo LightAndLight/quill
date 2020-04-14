@@ -22,14 +22,14 @@ migration =
       migrationName <*>
       braces (symbol "commands" *> symbolic ':' *> brackets (command `sepBy` comma))
     regular =
-      (\name (parents, commands) ->
-         Migration name (Just $ Vector.fromList parents) $ Vector.fromList commands
+      (\name (parent, commands) ->
+         Migration name (Just parent) $ Vector.fromList commands
       ) <$ symbol "migration" <*>
       migrationName <*>
       braces
-        ((,) <$>
-         (symbol "parents" *> symbolic ':' *> brackets (migrationName `sepBy` comma)) <* comma <*>
-         (symbol "commands" *> symbolic ':' *> brackets (command `sepBy` comma))
+        ((,) <$ symbol "parent" <* symbolic ':' <*>
+         migrationName <* comma <* symbol "commands" <* symbolic ':' <*>
+         brackets (command `sepBy` comma)
         )
 
 command :: (Monad m, TokenParsing m) => m Command

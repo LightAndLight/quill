@@ -144,7 +144,7 @@ parseTests = do
       ParseTest
       { parse_input =
         [ "migration \"20200413-testing\" {"
-        , "  parents: [\"20200413-prev1\", \"20200413-prev2\"],"
+        , "  parent: \"20200413-prev1\","
         , "  commands: ["
         , "    create table TableA {"
         , "      a : Int, PK(a),"
@@ -161,10 +161,7 @@ parseTests = do
       , parse_output =
         Migration
           (Migration.Name "20200413-testing")
-          (Just
-           [ Migration.Name "20200413-prev1"
-           , Migration.Name "20200413-prev2"
-           ]
+          (Just $ Migration.Name "20200413-prev1"
           )
           [ CreateTable
               "TableA"
@@ -183,7 +180,7 @@ parseTests = do
       ParseTest
       { parse_input =
         [ "migration \"20200413-testing\" {"
-        , "  parents: [\"20200413-prev1\"],"
+        , "  parent: \"20200413-prev1\","
         , "  commands: ["
         , "    alter table TableB {"
         , "      add c : Int,"
@@ -197,7 +194,7 @@ parseTests = do
       , parse_output =
         Migration
           (Migration.Name "20200413-testing")
-          (Just [Migration.Name "20200413-prev1"])
+          (Just $ Migration.Name "20200413-prev1")
           [ AlterTable
               "TableB"
               [ AddField "c" $ TInt ()
