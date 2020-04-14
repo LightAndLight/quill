@@ -702,7 +702,7 @@ data ConstraintError t'
   | UnknownConstraint Text
   | NotEnumerable (Type t')
   | MultiplePrimaryKeys Text
-  deriving Show
+  deriving (Eq, Show)
 
 data DeclError t t'
   = ConstraintError (ConstraintError t')
@@ -741,8 +741,11 @@ checkConstraint tableName fieldTypes hasPrimaryKey constr args =
       let arg = args Vector.! 0
       argTy <- maybe (throwError $ FieldNotInScope arg) pure $ Map.lookup arg fieldTypes
       unless (isEnumerable $ () <$ argTy) . throwError $ NotEnumerable argTy
-    Syntax.PrimaryKey ->
+    Syntax.PrimaryKey -> do
       when hasPrimaryKey . throwError $ MultiplePrimaryKeys tableName
+      traverse_
+        (\arg -> maybe (throwError $ FieldNotInScope arg) pure $ Map.lookup arg fieldTypes)
+        args
     Syntax.Other name -> throwError $ UnknownConstraint name
 
 checkTableItem ::

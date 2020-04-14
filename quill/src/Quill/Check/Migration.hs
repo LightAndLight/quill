@@ -1,11 +1,15 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
+{-# language GeneralizedNewtypeDeriving, UndecidableInstances #-}
 {-# language LambdaCase #-}
 {-# language ScopedTypeVariables #-}
 {-# language ViewPatterns #-}
 module Quill.Check.Migration
   ( MigrationError(..)
-  , MigrationEnv
+  , MigrationEnv(..)
+  , Tracked(..)
+  , Table
+  , TableItem(..)
   , emptyMigrationEnv
   , checkMigration
   , checkMigrations
@@ -26,6 +30,7 @@ import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
+import GHC.Exts (IsList)
 
 import Quill.Check (ConstraintError, checkConstraint, mapError)
 import Quill.Syntax (Constraint(..), Type)
@@ -34,20 +39,22 @@ import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
 import qualified Quill.Syntax.Migration as Migration (Name(..))
 
 data Tracked a = Tracked { origin :: Migration.Name, unTracked :: a }
-  deriving (Functor, Foldable, Traversable)
+  deriving (Eq, Show, Functor, Foldable, Traversable)
 
 data TableItem
   = Field Text (Tracked (Type ()))
   | Constraint Constraint (Vector Text)
+  deriving (Eq, Show)
 
 newtype Table = Table { unTable :: Vector (Tracked TableItem) }
+  deriving (Eq, Show, IsList)
 
 data MigrationEnv
   = MigrationEnv
   { _meChecked :: Set Migration.Name
   , _mePath :: Seq Migration.Name
   , _meTables :: Map Text (Tracked Table)
-  }
+  } deriving (Eq, Show)
 
 emptyMigrationEnv :: MigrationEnv
 emptyMigrationEnv =
@@ -66,7 +73,7 @@ data MigrationError
   | FieldAlreadyExists Text
   | ConstraintError (ConstraintError ())
   | CycleDetected (Seq Migration.Name)
-  deriving Show
+  deriving (Eq, Show)
 
 checkCommand ::
   forall m.
@@ -179,7 +186,6 @@ checkMigration ::
   Migration ->
   m MigrationEnv
 checkMigration check env (Migration name m_parents commands) = do
-  when (Set.member name $ _meChecked env) . throwError $ DuplicateMigration name
   env' <-
     case m_parents of
       Nothing -> pure env
@@ -189,22 +195,35 @@ checkMigration check env (Migration name m_parents commands) = do
 
 checkMigrations ::
   MonadError MigrationError m =>
-  Map Migration.Name Migration ->
+  Vector Migration ->
   MigrationEnv ->
   Migration.Name ->
   m MigrationEnv
-checkMigrations ms = checkName
+checkMigrations msInput env root = do
+  ms <-
+    foldlM
+      (\acc m ->
+          let
+            name = _mName m
+          in
+            if name `Map.member` acc
+            then throwError $ DuplicateMigration name
+            else pure $ Map.insert name m acc
+      )
+      mempty
+      msInput
+  checkName ms env root
   where
-    checkName e n =
+    checkName ms e n =
       case Map.lookup n ms of
         Nothing -> throwError $ MigrationNotFound n
         Just m -> do
           when (Maybe.isJust $ find (n ==) (_mePath e)) . throwError $ CycleDetected (_mePath e)
           let path = _mePath e
-          e' <- checkMigration check (e { _mePath = path Seq.|> n }) m
+          e' <- checkMigration (check ms) (e { _mePath = path Seq.|> n }) m
           pure $ e' { _mePath = path }
-    check e n =
+
+    check ms e n =
       if Set.member n (_meChecked e)
       then pure e
-      else checkName e n
-
+      else checkName ms e n
