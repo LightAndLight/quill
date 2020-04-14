@@ -196,6 +196,104 @@ failureTests = do
         output `shouldBe`
         Left (Check.FieldNotFound "b")
     }
+  it "dependencies determine environment" $
+    check $
+    Check
+    { _check_input =
+      [ "initial migration \"a_1\" {"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "initial migration \"a_2\" {"
+      , "  commands: ["
+      , "    alter table Table1 {"
+      , "      add constraint PK(a)"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"b\" {"
+      , "  parents: [\"a_1\", \"a_2\"],"
+      , "  commands: []"
+      , "}"
+      ]
+    , _check_root = Migration.Name "b"
+    , _check_outcome =
+      \output ->
+        output `shouldBe`
+        Left (Check.TableNotFound "Table1")
+    }
+  it "initial migrations can conflict" $
+    check $
+    Check
+    { _check_input =
+      [ "initial migration \"a_1\" {"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "initial migration \"a_2\" {"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"b\" {"
+      , "  parents: [\"a_1\", \"a_2\"],"
+      , "  commands: []"
+      , "}"
+      ]
+    , _check_root = Migration.Name "b"
+    , _check_outcome =
+      \output ->
+        output `shouldBe`
+        Left (Check.TableAlreadyExists "Table1")
+    }
+  it "initial migrations can conflict with migrations" $
+    check $
+    Check
+    { _check_input =
+      [ "initial migration \"a_1\" {"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "initial migration \"x\" {"
+      , "  commands: []"
+      , "}"
+      , ""
+      , "migration \"a_2\" {"
+      , "  parents: [\"x\"],"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"b\" {"
+      , "  parents: [\"a_1\", \"a_2\"],"
+      , "  commands: []"
+      , "}"
+      ]
+    , _check_root = Migration.Name "b"
+    , _check_outcome =
+      \output ->
+        output `shouldBe`
+        Left (Check.TableAlreadyExists "Table1")
+    }
   it "field already exists" $
     check $
     Check
