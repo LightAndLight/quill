@@ -223,6 +223,47 @@ failureTests = do
         output `shouldBe`
         Left (Check.FieldAlreadyExists "a")
     }
+  it "conflicting diamond" $
+    check $
+    Check
+    { _check_input =
+      [ "initial migration \"a\" {"
+      , "  commands: ["
+      , "    create table Table1 {"
+      , "      a : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"b_1\" {"
+      , "  parents: [\"a\"],"
+      , "  commands: ["
+      , "    alter table Table1 {"
+      , "      add b : Int"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"b_2\" {"
+      , "  parents: [\"a\"],"
+      , "  commands: ["
+      , "    alter table Table1 {"
+      , "      add b : Bool"
+      , "    }"
+      , "  ]"
+      , "}"
+      , ""
+      , "migration \"c\" {"
+      , "  parents: [\"b_1\", \"b_2\"],"
+      , "  commands: []"
+      , "}"
+      ]
+    , _check_root = Migration.Name "c"
+    , _check_outcome =
+      \output ->
+        output `shouldBe`
+        Left (Check.FieldAlreadyExists "b")
+    }
   describe "constraint error" $ do
     it "arg mismatch" $
       check $
