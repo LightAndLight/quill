@@ -15,7 +15,7 @@ module Quill.SQL
   )
 where
 
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Table.Pure
   ( Column(..)
   , Constraint(..)
   , Table(Table)

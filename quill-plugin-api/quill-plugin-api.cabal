@@ -27,20 +27,28 @@ library
                      , Capnp.Gen.Response.Pure
                      , Capnp.Gen.Request
                      , Capnp.Gen.Request.Pure
+                     , Capnp.Gen.Table
+                     , Capnp.Gen.Table.Pure
   other-modules:       
                        Capnp.Gen.ById.Xa3a72b9143c87ce3.Pure
                      , Capnp.Gen.ById.Xa3a72b9143c87ce3
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786.Pure
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786
+                     , Capnp.Gen.ById.Xf9e99c62538eec08.Pure
+                     , Capnp.Gen.ById.Xf9e99c62538eec08
   autogen-modules:
                        Capnp.Gen.Response
                      , Capnp.Gen.Response.Pure
                      , Capnp.Gen.Request
                      , Capnp.Gen.Request.Pure
+                     , Capnp.Gen.Table
+                     , Capnp.Gen.Table.Pure
                      , Capnp.Gen.ById.Xa3a72b9143c87ce3.Pure
                      , Capnp.Gen.ById.Xa3a72b9143c87ce3
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786.Pure
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786
+                     , Capnp.Gen.ById.Xf9e99c62538eec08.Pure
+                     , Capnp.Gen.ById.Xf9e99c62538eec08
 
   build-depends:       base ^>=4.12.0.0
                      , capnp == 0.4.0.0

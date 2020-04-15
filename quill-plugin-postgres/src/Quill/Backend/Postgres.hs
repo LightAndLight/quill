@@ -2,14 +2,14 @@
 module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(Result))
+import Capnp.Gen.Table.Pure
   ( Column(Column)
   , Constraint(..)
   , Other(Other)
-  , Request(..)
   , Table(Table)
   )
-import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Control.Exception (bracket)
 import Control.Monad (unless)
 import Control.Monad.Except (runExceptT, throwError)

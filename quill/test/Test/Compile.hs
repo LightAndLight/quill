@@ -3,7 +3,7 @@
 {-# language TypeApplications #-}
 module Test.Compile (compileTests) where
 
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Table.Pure
   ( Column(..)
   , Table(Table)
   )

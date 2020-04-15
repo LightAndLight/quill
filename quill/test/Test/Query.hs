@@ -4,13 +4,13 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(..))
+import Capnp.Gen.Table.Pure
   ( Column(..)
   , Constraint(..)
-  , Request(..)
   , Table(Table)
   )
-import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
