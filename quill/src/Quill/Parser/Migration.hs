@@ -10,7 +10,7 @@ import qualified Quill.Parser as Parser
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
 import qualified Quill.Syntax.Migration as Migration (Name(..))
 
-migration :: (Monad m, TokenParsing m) => m Migration
+migration :: (Monad m, TokenParsing m) => m (Migration ())
 migration =
   initial <|>
   regular
@@ -32,7 +32,7 @@ migration =
          brackets (command `sepBy` comma)
         )
 
-command :: (Monad m, TokenParsing m) => m Command
+command :: (Monad m, TokenParsing m) => m (Command ())
 command =
   createTable <|>
   alterTable

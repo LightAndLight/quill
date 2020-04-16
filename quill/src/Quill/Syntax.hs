@@ -82,8 +82,8 @@ data Constraint
   | Other Text
   deriving (Eq, Ord, Show)
 
-data TableItem t
-  = Field Text (Type t)
+data TableItem typeInfo
+  = Field Text (Type typeInfo)
   | Constraint Constraint (Vector Text)
   deriving (Eq, Show)
 
@@ -231,19 +231,19 @@ getAnn e =
     Info a _ -> Just a
     _ -> Nothing
 
-data Decl t t'
-  = Table Text (Vector (TableItem t'))
-  | Type Text (Type t')
+data Decl typeInfo exprInfo
+  = Table Text (Vector (TableItem typeInfo))
+  | Type Text (Type typeInfo)
   | Query
       Text
-      (Vector (Text, Type t'))
-      (Type t')
-      (Scope Int (Expr t) Void)
+      (Vector (Text, Type typeInfo))
+      (Type typeInfo)
+      (Scope Int (Expr exprInfo) Void)
   | Function
       Text
-      (Vector (Text, Type t'))
-      (Type t')
-      (Scope Int (Expr t) Void)
+      (Vector (Text, Type typeInfo))
+      (Type typeInfo)
+      (Scope Int (Expr exprInfo) Void)
   deriving (Eq, Show)
 
 prettyExpr :: (a -> Doc) -> Expr t a -> Doc
