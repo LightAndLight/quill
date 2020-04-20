@@ -24,6 +24,7 @@ library
                      , Quill.Parser.Migration
                      , Quill.Query
                      , Quill.SQL
+                     , Quill.SQL.Migration
                      , Quill.Syntax
                      , Quill.Syntax.Migration
   build-depends:       base ^>=4.12.0.0

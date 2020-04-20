@@ -23,7 +23,9 @@ custom-setup
 
 library
   exposed-modules:
-                       Capnp.Gen.Response
+                       Capnp.Gen.Migration
+                     , Capnp.Gen.Migration.Pure
+                     , Capnp.Gen.Response
                      , Capnp.Gen.Response.Pure
                      , Capnp.Gen.Request
                      , Capnp.Gen.Request.Pure
@@ -36,8 +38,12 @@ library
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786
                      , Capnp.Gen.ById.Xf9e99c62538eec08.Pure
                      , Capnp.Gen.ById.Xf9e99c62538eec08
+                     , Capnp.Gen.ById.Xb95ef7fb3a9fb3ab.Pure
+                     , Capnp.Gen.ById.Xb95ef7fb3a9fb3ab
   autogen-modules:
-                       Capnp.Gen.Response
+                       Capnp.Gen.Migration
+                     , Capnp.Gen.Migration.Pure
+                     , Capnp.Gen.Response
                      , Capnp.Gen.Response.Pure
                      , Capnp.Gen.Request
                      , Capnp.Gen.Request.Pure
@@ -49,6 +55,8 @@ library
                      , Capnp.Gen.ById.Xa3fb1aad7b12a786
                      , Capnp.Gen.ById.Xf9e99c62538eec08.Pure
                      , Capnp.Gen.ById.Xf9e99c62538eec08
+                     , Capnp.Gen.ById.Xb95ef7fb3a9fb3ab.Pure
+                     , Capnp.Gen.ById.Xb95ef7fb3a9fb3ab
 
   build-depends:       base ^>=4.12.0.0
                      , capnp == 0.4.0.0
