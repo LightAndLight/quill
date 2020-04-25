@@ -15,7 +15,7 @@ module Quill.SQL
   )
 where
 
-import Capnp.Gen.Table.Pure
+import qualified Capnp.Gen.Table.Pure as SQL
   ( Column(..)
   , Constraint(..)
   , Table(Table)
@@ -316,20 +316,20 @@ compileType ty =
     Syntax.TName{} -> error "SQL.compileType: found TOptional"
     Syntax.TInt{} -> "INTEGER"
 
-compileTable :: Text -> Check.TableInfo -> Table
+compileTable :: Text -> Check.TableInfo -> SQL.Table
 compileTable tableName tableInfo =
   let
     (_, colInfos, constraints) = gatherConstraints $ Check._tiItems tableInfo
   in
-    Table
+    SQL.Table
       (encodeUtf8 tableName)
       (fmap
           (\(n, ty) ->
-            Column
-            { name = encodeUtf8 n
-            , type_ = compileType ty
-            , notNull = True
-            , autoIncrement =
+            SQL.Column
+            { SQL.name = encodeUtf8 n
+            , SQL.type_ = compileType ty
+            , SQL.notNull = True
+            , SQL.autoIncrement =
                 maybe False ((Syntax.AutoIncrement `elem`) . snd) $
                 Map.lookup n colInfos
             }
@@ -338,7 +338,7 @@ compileTable tableName tableInfo =
         Check._tiColumnInfo tableInfo
       )
       ((\(c, args) ->
-          Constraint'other . Other (encodeUtf8 c) $
+          SQL.Constraint'other . SQL.Other (encodeUtf8 c) $
           encodeUtf8 <$> args
         ) <$>
         Vector.fromList constraints

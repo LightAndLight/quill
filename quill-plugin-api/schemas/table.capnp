@@ -8,7 +8,8 @@ struct Other {
 struct Constraint {
   union {
     primaryKey @0 :List(Data);
-    other @1 :Other;
+    autoIncrement @1 :Data;
+    other @2 :Other;
   }
 }
 

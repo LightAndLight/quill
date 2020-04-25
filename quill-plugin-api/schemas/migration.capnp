@@ -38,6 +38,10 @@ struct Command {
 }
 
 struct Migration {
-  parent @0 :Data;
-  commands @1 :List(Command);
+  name @0 :Data;
+  parent :union {
+    none @1 :Void;
+    some @2 :Data;
+  }
+  commands @3 :List(Command);
 }

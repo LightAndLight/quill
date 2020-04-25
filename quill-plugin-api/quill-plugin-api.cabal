@@ -11,8 +11,10 @@ maintainer:          isaace71295@gmail.com
 category:            Language
 extra-source-files:
   CHANGELOG.md,
+  schemas/migration.capnp,
   schemas/request.capnp,
-  schemas/response.capnp
+  schemas/response.capnp,
+  schemas/table.capnp
 
 custom-setup
   setup-depends:

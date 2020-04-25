@@ -20,7 +20,8 @@ data Command typeInfo
   | AlterTable Text (Vector (FieldChange typeInfo))
   deriving (Eq, Show)
 
-newtype Name = Name Text deriving (Eq, Ord, Show)
+newtype Name = Name { unName :: Text }
+  deriving (Eq, Ord, Show)
 
 data Migration typeInfo
   = Migration
