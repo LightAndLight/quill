@@ -1,7 +1,10 @@
+{-# language BangPatterns #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
+import Capnp.Gen.Migration.Pure
+  (AlterTable(..), Command(..), Migration(Migration), Migration'parent(..), TableChange(..))
 import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Capnp.Gen.Table.Pure
@@ -14,6 +17,7 @@ import Control.Exception (bracket)
 import Control.Monad (unless)
 import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
@@ -22,6 +26,9 @@ import qualified Data.ByteString.Lazy as Lazy
 import Data.Foldable (fold)
 import qualified Data.List as List
 import Data.Traversable (for)
+import Data.Vector (Vector)
+import qualified Data.Vector as Vector
+import Data.Word (Word16)
 import Database.PostgreSQL.LibPQ (Connection)
 import qualified Database.PostgreSQL.LibPQ as Postgres
 import GHC.Exts (fromString)
@@ -37,7 +44,8 @@ data Config
   , _cfgDbPassword :: Maybe String
   }
 
-withConnection :: Config -> (Connection -> IO ()) -> IO ()
+-- Don't return the Connection!
+withConnection :: Config -> (Connection -> IO a) -> IO a
 withConnection config = bracket (Postgres.connectdb connString) Postgres.finish
   where
     item :: ByteString -> (Config -> Maybe String) -> [ByteString]
@@ -59,73 +67,119 @@ run sock config = loop
       quit <- handleRequest config sock req
       unless quit loop
 
-createTable :: Table -> ByteString
+gotUnknown :: Word16 -> a
+gotUnknown tag = error $ "Unknown tag: " <> show tag
+
+data QueryPart
+  = I ByteString
+  | V ByteString
+  | S ByteString
+
+exec :: Connection -> [QueryPart] -> IO (Maybe Postgres.Result)
+exec conn ps =
+  runMaybeT $ do
+    query <-
+      Lazy.toStrict . Builder.toLazyByteString . fold <$>
+      traverse (fmap Builder.byteString . queryPart) ps
+    MaybeT $ Postgres.exec conn query
+  where
+    queryPart (I s) = MaybeT $ Postgres.escapeIdentifier conn s
+    queryPart (V s) = MaybeT $ Postgres.escapeStringConn conn s
+    queryPart (S s) = pure s
+
+createTable :: Table -> [QueryPart]
 createTable (Table tableName columns constraints) =
-  Lazy.toStrict . Builder.toLazyByteString $
   createSequences columns <>
-  "CREATE TABLE " <> Builder.byteString tableName <> "(\n" <>
+  [S "CREATE TABLE ", I tableName, S "(\n" ] <>
   fold
-    (List.intersperse ",\n" $
+    (List.intersperse [S ",\n"] $
      foldr ((:) . createColumn) [] columns
     ) <>
-  foldMap ((",\n" <>) . createConstraint) constraints <>
-  ");" <>
+  foldMap ((S ",\n" :) . createConstraint) constraints <>
+  [S ");"] <>
   alterSequences columns
   where
+    createSequences :: Vector Column -> [QueryPart]
     createSequences =
       foldMap
         (\(Column name _ _ autoIncrement) ->
           if autoIncrement
           then
-            "CREATE SEQUENCE " <> Builder.byteString tableName <>
-            "_" <> Builder.byteString name <>
-            "_seq;\n"
-          else ""
+            [ S "CREATE SEQUENCE "
+            , I $ tableName <> "_" <> name <> "_seq"
+            , S ";\n"
+            ]
+          else
+            []
         )
+    alterSequences :: Vector Column -> [QueryPart]
     alterSequences =
       foldMap
         (\(Column name _ _ autoIncrement) ->
           if autoIncrement
           then
-            "ALTER SEQUENCE " <> Builder.byteString tableName <>
-            "_" <> Builder.byteString name <>
-            "_seq OWNED BY " <>
-            Builder.byteString tableName <> "." <> Builder.byteString name <>
-            ";\n"
-          else ""
+            [ S "ALTER SEQUENCE "
+            , I $ tableName <> "_" <> name <> "_seq"
+            , S " OWNED BY "
+            , I tableName
+            , S "."
+            , I name
+            , S ";\n"
+            ]
+          else
+            []
         )
 
-    createColumn :: Column -> Builder
+    createColumn :: Column -> [QueryPart]
     createColumn (Column name type_ notNull autoIncrement) =
-      Builder.byteString name <> " " <>
-      Builder.byteString type_ <>
-      (if notNull then " NOT NULL" else "") <>
+      [ I name
+      , S " "
+      , I type_
+      ] <>
+      (if notNull then [S " NOT NULL"] else []) <>
       (if autoIncrement
        then
-         " DEFAULT nextval('" <> Builder.byteString tableName <>
-         "_" <> Builder.byteString name <>
-         "_seq')"
-       else ""
+         [ S " DEFAULT nextval('"
+         , I $ tableName <> "_" <> name <> "_seq"
+         , S "')"
+         ]
+       else []
       )
 
-    createConstraint :: Constraint -> Builder
+    createConstraint :: Constraint -> [QueryPart]
     createConstraint c =
       case c of
         Constraint'primaryKey args ->
-          "PRIMARY KEY(" <>
-          fold
-            (List.intersperse "," $
-             foldr ((:) . Builder.byteString) [] args
-            ) <>
-          ")"
+          [S "PRIMARY KEY("] <>
+          List.intersperse (S ",") (foldr ((:) . I) [] args) <>
+          [S ")"]
+        Constraint'autoIncrement{} ->
+          -- autoincrement should have been set on a per-column basis
+          mempty
         Constraint'other (Other name args) ->
-          Builder.byteString name <> "(" <>
-          fold
-            (List.intersperse "," $
-             foldr ((:) . Builder.byteString) [] args
-            ) <>
-          ")"
-        Constraint'unknown' tag -> error $ "Unknown tag: " <> show tag
+          [ I name
+          , S "("
+          ] <>
+          List.intersperse (S ",") (foldr ((:) . I) [] args) <>
+          [S ")"]
+        Constraint'unknown' tag -> gotUnknown tag
+
+compileChange :: ByteString -> TableChange -> [QueryPart]
+compileChange tableName change =
+  case change of
+    TableChange'addColumn (Column colName colType notNull autoIncrement) ->
+      (if autoIncrement then _ else mempty) <>
+      _ <>
+      (if autoIncrement then _ else mempty)
+    TableChange'dropColumn colName -> _
+    TableChange'addConstraint constr -> _
+
+compileCommand :: Command -> [QueryPart]
+compileCommand command =
+  case command of
+    Command'createTable table -> createTable table
+    Command'alterTable (AlterTable tableName changes) ->
+      foldMap (compileChange tableName) changes
 
 handleRequest ::
   Config ->
@@ -138,8 +192,9 @@ handleRequest config sock req =
       respond Response'quitting
       quit
     Request'createTable table -> do
+      let !tableQuery = createTable table
       withConnection config $ \conn -> do
-        m_res <- Postgres.exec conn $ createTable table
+        m_res <- exec conn tableQuery
         case m_res of
           Nothing -> respondDbError conn
           Just res -> do
@@ -148,9 +203,10 @@ handleRequest config sock req =
               Postgres.CommandOk -> respond Response'done
               _ -> respondDbError conn
       continue
+    Request'migrate migration -> handleMigration migration
     Request'exec input -> do
       withConnection config $ \conn -> do
-        m_res <- Postgres.exec conn input
+        m_res <- exec conn input
         case m_res of
           Nothing -> respondDbError conn
           Just res -> do
@@ -201,6 +257,72 @@ handleRequest config sock req =
       case m_err of
         Nothing -> respondError "An unknown error occurred"
         Just err -> respondError err
+    withResult ::
+      Connection ->
+      IO (Maybe a) ->
+      (a -> IO Bool) ->
+      IO Bool
+    withResult conn m k = do
+      m_res <- m
+      case m_res of
+        Nothing -> do
+          respondDbError conn
+          continue
+        Just res -> k res
     respond = Capnp.sPutValue sock
     continue = pure False
     quit = pure True
+
+    runMigration :: Connection -> ByteString -> Vector Command -> IO Bool
+    runMigration conn name commands =
+      withResult conn (Postgres.escapeStringConn conn name) $ \escapedName -> do
+        let
+          query =
+            Lazy.toStrict . Builder.toLazyByteString $
+            "INSERT INTO quill_migrations(name) VALUES (" <> Builder.byteString escapedName <> ";\n" <>
+            foldMap compileCommand commands
+        withResult conn (exec conn query) $ \result -> do
+          status <- Postgres.resultStatus result
+          case status of
+            Postgres.CommandOk -> respond Response'done
+            _ -> respondError $ "Unsupported response: " <> Char8.pack (show status)
+          continue
+
+    handleMigration :: Migration -> IO Bool
+    handleMigration (Migration name m_parent commands) =
+      case m_parent of
+        Migration'parent'unknown' tag -> gotUnknown tag
+        Migration'parent'none ->
+          withConnection config $ \conn -> runMigration conn name commands
+        Migration'parent'some parent ->
+          withConnection config $ \conn ->
+          let
+            selectParent =
+              exec conn $
+              "SELECT name FROM quill_migrations WHERE " <>
+              "ORDER BY id DESC LIMIT 1;"
+          in
+            withResult conn selectParent $ \result -> do
+              status <- Postgres.resultStatus result
+              case status of
+                Postgres.TuplesOk -> do
+                  rows <- Postgres.ntuples result
+                  case compare rows 1 of
+                    LT -> do
+                      respondError $ "Missing parent migration '" <> parent <> "'"
+                      continue
+                    EQ ->
+                      withResult conn (Postgres.getvalue result 0 0) $ \value ->
+                      if value == parent
+                      then runMigration conn name commands
+                      else do
+                        respondError $ "Most recent migration is '" <> value <> "', not '" <> parent <> "'"
+                        continue
+                    GT -> error "impossible: the query said 'LIMIT 1' but we got more than one row"
+                _ -> do
+                  respondError $ "Unsupported response: " <> Char8.pack (show status)
+                  continue
+      -- check that parent is in the migrations table
+      --   if it isn't, return an error
+      --   if it is, exec: adding this migration to the migrations table + commands
+
