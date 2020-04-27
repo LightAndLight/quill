@@ -519,3 +519,4 @@ queryTests = do
       rows `shouldBe` 1
       cols `shouldBe` 1
       data_ `shouldBe` [["\"quill_migrations\""]]
+      shouldBeDone =<< exec backend "DROP TABLE quill_migrations;"
