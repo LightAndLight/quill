@@ -82,7 +82,7 @@ exec conn ps =
       traverse (fmap Builder.byteString . queryPart) ps
     MaybeT $ Postgres.exec conn query
   where
-    queryPart (I s) = MaybeT $ Postgres.escapeIdentifier conn s
+    queryPart (I s) = MaybeT $ Postgres.escapeStringConn conn s
     queryPart (V s) = MaybeT $ Postgres.escapeStringConn conn s
     queryPart (S s) = pure s
 
@@ -318,6 +318,7 @@ handleRequest config sock req =
           status <- Postgres.resultStatus result
           case status of
             Postgres.CommandOk -> respond Response'done
+            Postgres.FatalError -> respondDbError conn
             _ -> respondError $ "Unsupported response: " <> Char8.pack (show status)
           continue
 
@@ -336,6 +337,9 @@ handleRequest config sock req =
               status <- Postgres.resultStatus result
               case status of
                 Postgres.CommandOk -> runMigration conn migrationName commands
+                Postgres.FatalError -> do
+                  respondDbError conn
+                  continue
                 _ -> do
                   respondError $ "Unsupported response: " <> Char8.pack (show status)
                   continue
@@ -364,6 +368,9 @@ handleRequest config sock req =
                         respondError $ "Most recent migration is '" <> value <> "', not '" <> parent <> "'"
                         continue
                     GT -> error "impossible: the query said 'LIMIT 1' but we got more than one row"
+                Postgres.FatalError -> do
+                  respondDbError conn
+                  continue
                 _ -> do
                   respondError $ "Unsupported response: " <> Char8.pack (show status)
                   continue
