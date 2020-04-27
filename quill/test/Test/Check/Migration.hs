@@ -5,8 +5,8 @@ import Control.Applicative (some)
 import qualified Data.Vector as Vector
 import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-import Quill.Check.Migration (TableItem(..), MigrationEnv(..), MigrationError, Tracked(..))
-import qualified Quill.Check as Check (ConstraintError(..))
+import Quill.Check.Migration (MigrationEnv(..), MigrationError)
+import qualified Quill.Check as Check (TableError(..), ConstraintError(..))
 import qualified Quill.Check.Migration as Check
 import Quill.Syntax (Constraint(..), Type(..))
 import qualified Quill.Syntax.Migration as Migration
@@ -140,7 +140,7 @@ failureTests = do
     , _check_outcome =
       \output ->
         output `shouldBe`
-        Left (Check.TableAlreadyExists "Table1")
+        Left (Check.TableAlreadyDefined "Table1")
     }
   it "table not found" $
     check $
@@ -249,7 +249,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.ConstraintError $ Check.ConstraintArgsMismatch 1 2)
+          Left (Check.MigrationConstraintError $ Check.ConstraintArgsMismatch 1 2)
       }
     it "field not in scope" $
       check $
@@ -276,7 +276,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.ConstraintError $ Check.FieldNotInScope "b")
+          Left (Check.TableConstraintError $ Check.FieldNotInScope "b")
       }
     it "unknown constraint" $
       check $
@@ -303,7 +303,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.ConstraintError $ Check.UnknownConstraint "Blaaah")
+          Left (Check.TableConstraintError $ Check.UnknownConstraint "Blaaah")
       }
     it "not enumerable" $
       check $
@@ -330,7 +330,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.ConstraintError . Check.NotEnumerable $ TBool ())
+          Left (Check.TableConstraintError . Check.NotEnumerable $ TBool ())
       }
     it "multiple primary keys" $
       check $
@@ -358,7 +358,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.ConstraintError $ Check.MultiplePrimaryKeys "Table1")
+          Left (Check.TableConstraintError $ Check.MultiplePrimaryKeys "Table1")
       }
 
 successTests :: Spec
@@ -375,7 +375,10 @@ successTests = do
     , _check_outcome =
       \output ->
         output `shouldBe`
-        Right (Check.emptyMigrationEnv { _meChecked = [Migration.Name "a"]})
+        Right
+          (Check.emptyMigrationEnv
+           { _meChecked = [Migration.Name "a"]}
+          )
     }
   it "initial migration - create table" $
     let

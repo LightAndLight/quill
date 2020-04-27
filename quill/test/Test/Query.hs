@@ -503,3 +503,6 @@ queryTests = do
           , ("is_food", Bool False)
           ]
         ]
+  around setupDbQuery . describe "Migrations" $ do
+    res <- Backend.request backend $ Request'migrate _
+    _
