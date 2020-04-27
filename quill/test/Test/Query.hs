@@ -4,8 +4,9 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
+import Capnp.Gen.Migration.Pure (Migration(Migration), Migration'parent(..))
 import Capnp.Gen.Request.Pure (Request(..))
-import Capnp.Gen.Response.Pure (Response(..), Result(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Capnp.Gen.Table.Pure
   ( Column(..)
   , Constraint(..)
@@ -90,6 +91,12 @@ exec backend = Backend.request backend . Request'exec
 
 createTable :: Backend -> Table -> IO Response
 createTable backend = Backend.request backend . Request'createTable
+
+shouldBeDone :: Response -> IO ()
+shouldBeDone res =
+  case res of
+    Response'done -> pure ()
+    _ -> error $ "Expected 'done', got: " <> show res
 
 setupDbDecode :: (Backend -> IO ()) -> IO ()
 setupDbDecode =
@@ -233,12 +240,6 @@ compile
                     Right code -> do
                       -- print code
                       pure code
-
-shouldBeDone :: Response -> IO ()
-shouldBeDone res =
-  case res of
-    Response'done -> pure ()
-    _ -> error $ "Expected result, got: " <> show res
 
 shouldBeResult :: Response -> IO Result
 shouldBeResult res =
@@ -503,6 +504,18 @@ queryTests = do
           , ("is_food", Bool False)
           ]
         ]
-  around setupDbQuery . describe "Migrations" $ do
-    res <- Backend.request backend $ Request'migrate _
-    _
+  around setupDbBlank . describe "Migrations" $ do
+    it "initial setup works" $ \backend -> do
+      let
+        m =
+          Migration
+            "initial"
+            Migration'parent'none
+            []
+      shouldBeDone =<< Backend.request backend (Request'migrate m)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend "SELECT table_name FROM information_schema.tables WHERE table_name = quill_migrations;"
+      rows `shouldBe` 1
+      cols `shouldBe` 1
+      data_ `shouldBe` [["\"quill_migrations\""]]
