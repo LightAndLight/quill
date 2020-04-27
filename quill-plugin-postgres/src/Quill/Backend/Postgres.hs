@@ -1,5 +1,6 @@
 {-# language BangPatterns #-}
 {-# language OverloadedLists, OverloadedStrings #-}
+{-# language ViewPatterns #-}
 module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
@@ -19,7 +20,6 @@ import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Data.ByteString (ByteString)
-import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
@@ -27,7 +27,6 @@ import Data.Foldable (fold)
 import qualified Data.List as List
 import Data.Traversable (for)
 import Data.Vector (Vector)
-import qualified Data.Vector as Vector
 import Data.Word (Word16)
 import Database.PostgreSQL.LibPQ (Connection)
 import qualified Database.PostgreSQL.LibPQ as Postgres
@@ -67,8 +66,8 @@ run sock config = loop
       quit <- handleRequest config sock req
       unless quit loop
 
-gotUnknown :: Word16 -> a
-gotUnknown tag = error $ "Unknown tag: " <> show tag
+gotUnknown :: String -> Word16 -> a
+gotUnknown ctor tag = error $ "Unknown tag in " <> ctor <> ": " <> show tag
 
 data QueryPart
   = I ByteString
@@ -99,14 +98,16 @@ createTable (Table tableName columns constraints) =
   [S ");"] <>
   alterSequences columns
   where
+    mkSeqName colName = I $ tableName <> "_" <> colName <> "_seq"
+
     createSequences :: Vector Column -> [QueryPart]
     createSequences =
       foldMap
-        (\(Column name _ _ autoIncrement) ->
+        (\(Column colName _ _ autoIncrement) ->
           if autoIncrement
           then
             [ S "CREATE SEQUENCE "
-            , I $ tableName <> "_" <> name <> "_seq"
+            , mkSeqName colName
             , S ";\n"
             ]
           else
@@ -115,15 +116,15 @@ createTable (Table tableName columns constraints) =
     alterSequences :: Vector Column -> [QueryPart]
     alterSequences =
       foldMap
-        (\(Column name _ _ autoIncrement) ->
+        (\(Column colName _ _ autoIncrement) ->
           if autoIncrement
           then
             [ S "ALTER SEQUENCE "
-            , I $ tableName <> "_" <> name <> "_seq"
+            , mkSeqName colName
             , S " OWNED BY "
             , I tableName
             , S "."
-            , I name
+            , I colName
             , S ";\n"
             ]
           else
@@ -131,16 +132,16 @@ createTable (Table tableName columns constraints) =
         )
 
     createColumn :: Column -> [QueryPart]
-    createColumn (Column name type_ notNull autoIncrement) =
-      [ I name
+    createColumn (Column colName colTy notNull autoIncrement) =
+      [ I colName
       , S " "
-      , I type_
+      , I colTy
       ] <>
       (if notNull then [S " NOT NULL"] else []) <>
       (if autoIncrement
        then
          [ S " DEFAULT nextval('"
-         , I $ tableName <> "_" <> name <> "_seq"
+         , I $ tableName <> "_" <> colName <> "_seq"
          , S "')"
          ]
        else []
@@ -156,30 +157,63 @@ createTable (Table tableName columns constraints) =
         Constraint'autoIncrement{} ->
           -- autoincrement should have been set on a per-column basis
           mempty
-        Constraint'other (Other name args) ->
-          [ I name
-          , S "("
-          ] <>
-          List.intersperse (S ",") (foldr ((:) . I) [] args) <>
-          [S ")"]
-        Constraint'unknown' tag -> gotUnknown tag
+        Constraint'other (Other otherName args) -> error "can't compile Other" otherName args
+        Constraint'unknown' tag -> gotUnknown "Constraint" tag
 
 compileChange :: ByteString -> TableChange -> [QueryPart]
 compileChange tableName change =
   case change of
+    TableChange'unknown' tag -> gotUnknown "TableChange" tag
     TableChange'addColumn (Column colName colType notNull autoIncrement) ->
-      (if autoIncrement then _ else mempty) <>
-      _ <>
-      (if autoIncrement then _ else mempty)
-    TableChange'dropColumn colName -> _
-    TableChange'addConstraint constr -> _
+      let
+        seqName = I $ tableName <> "_" <> colName <> "_seq"
+      in
+        (if autoIncrement
+         then [S "CREATE SEQUENCE ", seqName, S ";\n"]
+         else mempty
+        ) <>
+        [S "ALTER TABLE ", I tableName, S " ADD ", I colName, S " ", I colType] <>
+        (if notNull then [S " NOT NULL"] else []) <>
+        (if autoIncrement
+         then [I " DEFAULT nextval('", seqName, S "')"]
+         else []
+        ) <>
+        [S ";\n"] <>
+        (if autoIncrement
+         then [S "ALTER SEQUENCE ", seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"]
+         else mempty
+        )
+    TableChange'dropColumn colName ->
+      [S "ALTER TABLE ", I tableName, S " DROP COLUMN ", I colName, S ";\n"]
+    TableChange'addConstraint constr ->
+      case constr of
+        Constraint'unknown' tag -> gotUnknown "Constraint" tag
+        Constraint'primaryKey args ->
+          let
+            constraintName = I $ tableName <> "_" <> "pk"
+          in
+            [ S "ALTER TABLE ", I tableName, S " ADD CONSTRAINT ", constraintName, S " "
+            , S "PRIMARY KEY ("
+            ] <> List.intersperse (S ", ") (foldr ((:) . I) [] args) <>
+            [ S ")", S ";\n"]
+        Constraint'autoIncrement colName ->
+          let
+            seqName = I $ tableName <> "_" <> colName <> "_seq"
+          in
+            [ S "CREATE SEQUENCE ", seqName, S ";\n"
+            , S "ALTER TABLE ", I tableName, S " ALTER COLUMN ", I colName
+            , S " SET DEFAULT nextval('", seqName, S "');\n"
+            , S "ALTER SEQUENCE ", seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"
+            ]
+        Constraint'other (Other constrName args) -> error "can't compile Other" constrName args
 
 compileCommand :: Command -> [QueryPart]
 compileCommand command =
   case command of
+    Command'unknown' tag -> gotUnknown "Command" tag
     Command'createTable table -> createTable table
-    Command'alterTable (AlterTable tableName changes) ->
-      foldMap (compileChange tableName) changes
+    Command'alterTable (AlterTable tableName tableChanges) ->
+      foldMap (compileChange tableName) tableChanges
 
 handleRequest ::
   Config ->
@@ -206,7 +240,7 @@ handleRequest config sock req =
     Request'migrate migration -> handleMigration migration
     Request'exec input -> do
       withConnection config $ \conn -> do
-        m_res <- exec conn input
+        m_res <- Postgres.exec conn input
         case m_res of
           Nothing -> respondDbError conn
           Just res -> do
@@ -274,13 +308,12 @@ handleRequest config sock req =
     quit = pure True
 
     runMigration :: Connection -> ByteString -> Vector Command -> IO Bool
-    runMigration conn name commands =
-      withResult conn (Postgres.escapeStringConn conn name) $ \escapedName -> do
-        let
-          query =
-            Lazy.toStrict . Builder.toLazyByteString $
-            "INSERT INTO quill_migrations(name) VALUES (" <> Builder.byteString escapedName <> ";\n" <>
-            foldMap compileCommand commands
+    runMigration conn migrationName commands =
+      let
+        query =
+          [ S "INSERT INTO quill_migrations(name) VALUES (", V migrationName, S ");\n"] <>
+          foldMap compileCommand commands
+      in
         withResult conn (exec conn query) $ \result -> do
           status <- Postgres.resultStatus result
           case status of
@@ -289,16 +322,16 @@ handleRequest config sock req =
           continue
 
     handleMigration :: Migration -> IO Bool
-    handleMigration (Migration name m_parent commands) =
+    handleMigration (Migration migrationName m_parent commands) =
       case m_parent of
-        Migration'parent'unknown' tag -> gotUnknown tag
+        Migration'parent'unknown' tag -> gotUnknown "Migration.parent" tag
         Migration'parent'none ->
-          withConnection config $ \conn -> runMigration conn name commands
+          withConnection config $ \conn -> runMigration conn migrationName commands
         Migration'parent'some parent ->
           withConnection config $ \conn ->
           let
             selectParent =
-              exec conn $
+              Postgres.exec conn $
               "SELECT name FROM quill_migrations WHERE " <>
               "ORDER BY id DESC LIMIT 1;"
           in
@@ -314,7 +347,7 @@ handleRequest config sock req =
                     EQ ->
                       withResult conn (Postgres.getvalue result 0 0) $ \value ->
                       if value == parent
-                      then runMigration conn name commands
+                      then runMigration conn migrationName commands
                       else do
                         respondError $ "Most recent migration is '" <> value <> "', not '" <> parent <> "'"
                         continue
