@@ -5,10 +5,12 @@ import Control.Applicative (some)
 import qualified Data.Vector as Vector
 import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
+import Quill.Check (TypeInfo(..))
 import Quill.Check.Migration (MigrationEnv(..), MigrationError)
-import qualified Quill.Check as Check (TableError(..), ConstraintError(..))
-import qualified Quill.Check.Migration as Check
-import Quill.Syntax (Constraint(..), Type(..))
+import qualified Quill.Check as Check (Origin(..), TableError(..), ConstraintError(..))
+import qualified Quill.Check.Migration as Check (MigrationError(..), checkMigrations, emptyMigrationEnv)
+import Quill.Syntax (Constraint(..), TableItem(..), Type(..))
+import Quill.Syntax.Migration (Migration(..))
 import qualified Quill.Syntax.Migration as Migration
 import qualified Quill.Parser as Parser (eof, parseString)
 import qualified Quill.Parser.Migration as Parser (migration)
@@ -17,7 +19,7 @@ data Check
   = Check
   { _check_input :: [String]
   , _check_root :: Migration.Name
-  , _check_outcome :: Either MigrationError MigrationEnv -> IO ()
+  , _check_outcome :: Either (MigrationError () ()) MigrationEnv -> IO ()
   }
 
 check :: Check -> IO ()
@@ -140,7 +142,7 @@ failureTests = do
     , _check_outcome =
       \output ->
         output `shouldBe`
-        Left (Check.TableAlreadyDefined "Table1")
+        Left (Check.MigrationTableError $ Check.TableAlreadyDefined "Table1")
     }
   it "table not found" $
     check $
@@ -276,7 +278,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.TableConstraintError $ Check.FieldNotInScope "b")
+          Left (Check.MigrationConstraintError $ Check.FieldNotInScope "b")
       }
     it "unknown constraint" $
       check $
@@ -303,7 +305,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.TableConstraintError $ Check.UnknownConstraint "Blaaah")
+          Left (Check.MigrationConstraintError $ Check.UnknownConstraint "Blaaah")
       }
     it "not enumerable" $
       check $
@@ -330,7 +332,11 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.TableConstraintError . Check.NotEnumerable $ TBool ())
+          Left
+            (Check.MigrationConstraintError .
+             Check.NotEnumerable $
+             TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+            )
       }
     it "multiple primary keys" $
       check $
@@ -358,7 +364,7 @@ failureTests = do
       , _check_outcome =
         \output ->
           output `shouldBe`
-          Left (Check.TableConstraintError $ Check.MultiplePrimaryKeys "Table1")
+          Left (Check.MigrationConstraintError $ Check.MultiplePrimaryKeys "Table1")
       }
 
 successTests :: Spec
@@ -373,11 +379,15 @@ successTests = do
       ]
     , _check_root = Migration.Name "a"
     , _check_outcome =
+      let
+        m_a = Migration.Name "a"
+      in
       \output ->
         output `shouldBe`
         Right
           (Check.emptyMigrationEnv
-           { _meChecked = [Migration.Name "a"]}
+           { _meMigrations = [(m_a, Migration m_a Nothing [])]
+           }
           )
     }
   it "initial migration - create table" $
@@ -399,22 +409,25 @@ successTests = do
       , _check_root = m_a
       , _check_outcome =
         \output ->
-          output `shouldBe`
-          Right
-            (Check.emptyMigrationEnv
-            { _meChecked = [m_a]
-            , _meTables =
-              [ ( "Table1"
-                , Check.Tracked m_a $
-                  [ Tracked m_a $ Field "id" (Tracked m_a $ TInt ())
-                  , Tracked m_a $ Constraint PrimaryKey ["id"]
-                  , Tracked m_a $ Field "b" (Tracked m_a $ TBool ())
+          let
+            idTy = TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
+            bTy = TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+          in
+            _meMigrations <$> output `shouldBe`
+            Right
+            [ ( m_a
+              , Migration
+                  m_a
+                  Nothing
+                  [ Migration.CreateTable "Table1"
+                    [ Field "id" idTy
+                    , Constraint PrimaryKey ["id"]
+                    , Field "b" bTy
+                    ]
                   ]
-                )
-              ]
-            }
-            )
-      }
+              )
+            ]
+        }
   it "initial migration - create and alter" $
     let
       m_a = Migration.Name "a"
@@ -437,20 +450,19 @@ successTests = do
       , _check_root = m_a
       , _check_outcome =
         \output ->
-          output `shouldBe`
+          _meMigrations <$> output `shouldBe`
           Right
-            (Check.emptyMigrationEnv
-            { _meChecked = [m_a]
-            , _meTables =
-              [ ( "Table1"
-                , Check.Tracked m_a $
-                  [ Tracked m_a $ Field "id" (Tracked m_a $ TInt ())
-                  , Tracked m_a $ Constraint PrimaryKey ["id"]
-                  ]
-                )
+          [ ( m_a
+            , Migration m_a Nothing
+              [ Migration.CreateTable "Table1"
+                [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                , Constraint PrimaryKey ["id"]
+                , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                ]
+              , Migration.AlterTable "Table1" [Migration.DropField "b"]
               ]
-            }
             )
+          ]
       }
   it "migration - create and alter" $
     let
@@ -481,18 +493,19 @@ successTests = do
       , _check_root = m_b
       , _check_outcome =
         \output ->
-          output `shouldBe`
+          _meMigrations <$> output `shouldBe`
           Right
-            (Check.emptyMigrationEnv
-            { _meChecked = [m_a, m_b]
-            , _meTables =
-              [ ( "Table1"
-                , Check.Tracked m_b $
-                  [ Tracked m_a $ Field "id" (Tracked m_a $ TInt ())
-                  , Tracked m_a $ Constraint PrimaryKey ["id"]
-                  ]
-                )
+          [ ( m_a
+            , Migration m_a Nothing
+              [ Migration.CreateTable "Table1"
+                [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                , Constraint PrimaryKey ["id"]
+                , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                ]
               ]
-            }
             )
+          , ( m_b
+            , Migration m_b (Just m_a) [Migration.AlterTable "Table1" [Migration.DropField "b"]]
+            )
+          ]
       }
