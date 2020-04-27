@@ -95,6 +95,10 @@ data TypeError exprInfo
   | DuplicateRecordFields
   deriving (Eq, Show)
 
+-- | `ColumnInfo ~ Map (NonEmpty Text) (Text, Type TypeInfo)`
+--
+-- `ColumnInfo` is a trie that maps a path of fields to
+-- a concrete column name and type.
 data ColumnInfo
   = Names (Vector (Text, ColumnInfo))
   | Name Text (Type TypeInfo)
