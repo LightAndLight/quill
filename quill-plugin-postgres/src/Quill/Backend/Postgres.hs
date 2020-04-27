@@ -326,7 +326,19 @@ handleRequest config sock req =
       case m_parent of
         Migration'parent'unknown' tag -> gotUnknown "Migration.parent" tag
         Migration'parent'none ->
-          withConnection config $ \conn -> runMigration conn migrationName commands
+          withConnection config $ \conn ->
+            let
+              createMigrations =
+                Postgres.exec conn $
+                "CREATE TABLE quill_migrations(id SERIAL PRIMARY KEY, name TEXT NOT NULL);"
+            in
+            withResult conn createMigrations $ \result -> do
+              status <- Postgres.resultStatus result
+              case status of
+                Postgres.CommandOk -> runMigration conn migrationName commands
+                _ -> do
+                  respondError $ "Unsupported response: " <> Char8.pack (show status)
+                  continue
         Migration'parent'some parent ->
           withConnection config $ \conn ->
           let
