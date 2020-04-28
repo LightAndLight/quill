@@ -311,7 +311,7 @@ handleRequest config sock req =
     runMigration conn migrationName commands =
       let
         query =
-          [ S "INSERT INTO quill_migrations(name) VALUES (", V migrationName, S ");\n"] <>
+          [ S "INSERT INTO quill_migrations(name) VALUES ('", V migrationName, S "');\n"] <>
           foldMap compileCommand commands
       in
         withResult conn (exec conn query) $ \result -> do

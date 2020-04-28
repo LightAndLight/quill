@@ -515,8 +515,8 @@ queryTests = do
       shouldBeDone =<< Backend.request backend (Request'migrate m)
       Result rows cols data_ <-
         shouldBeResult =<<
-        exec backend "SELECT table_name FROM information_schema.tables WHERE table_name = quill_migrations;"
+        exec backend "SELECT table_name FROM information_schema.tables WHERE table_name = 'quill_migrations';"
+      shouldBeDone =<< exec backend "DROP TABLE quill_migrations;"
       rows `shouldBe` 1
       cols `shouldBe` 1
-      data_ `shouldBe` [["\"quill_migrations\""]]
-      shouldBeDone =<< exec backend "DROP TABLE quill_migrations;"
+      data_ `shouldBe` [["quill_migrations"]]
