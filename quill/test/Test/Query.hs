@@ -133,7 +133,7 @@ setupDbDecode =
 
        (shouldBeDone =<<) . exec backend $
          Char8.unlines
-         [ "INSERT INTO \"Persons\" ( age, checked )"
+         [ "INSERT INTO Persons ( age, checked )"
          , "VALUES ( 10, true ), ( 11, false ), ( 12, true );"
          ]
 
@@ -163,16 +163,16 @@ setupDbDecode =
 
        (shouldBeDone =<<) . exec backend $
          Char8.unlines
-         [ "INSERT INTO \"Nested\" ( a, nest_b, nest_c )"
+         [ "INSERT INTO Nested ( a, nest_b, nest_c )"
          , "VALUES ( 11, 100, true ), ( 22, 200, false ), ( 33, 300, true );"
          ]
 
        pure ()
     )
     (\backend -> do
-       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Nested\";"
-       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Persons\";"
-       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS \"Persons_id_seq\";"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Nested;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Persons;"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS Persons_id_seq;"
        pure ()
     )
 
@@ -197,8 +197,8 @@ setupDbQuery =
   setupDb
     (\_ -> pure ())
     (\backend -> do
-       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Expenses\";"
-       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS \"Expenses_id_seq\";"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Expenses;"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS Expenses_id_seq;"
        do
          res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
          case res of
@@ -265,7 +265,7 @@ queryTests :: Spec
 queryTests = do
   around setupDbDecode . describe "decode" $ do
     it "decodeRecord 1" $ \backend -> do
-      res <- exec backend "SELECT * FROM \"Persons\";"
+      res <- exec backend "SELECT * FROM Persons;"
       let fields = [("id", TInt ()), ("age", TInt ()), ("checked", TBool ())]
       Result _ _ results <- shouldBeResult res
       one <- Query.decodeRecord (results Vector.! 0) fields
@@ -275,7 +275,7 @@ queryTests = do
       two `shouldBe` Record [("id", Int 2), ("age", Int 11), ("checked", Bool False)]
       three `shouldBe` Record [("id", Int 3), ("age", Int 12), ("checked", Bool True)]
     it "decodeRecord 2" $ \backend -> do
-      res <- exec backend "SELECT * FROM \"Nested\";"
+      res <- exec backend "SELECT * FROM Nested;"
       let fields = [("a", TInt ()), ("nest", TRecord () [("b", TInt ()), ("c", TBool ())])]
       Result _ _ results <- shouldBeResult res
       one <- Query.decodeRecord (results Vector.! 0) fields
@@ -310,22 +310,22 @@ queryTests = do
             Right @CompileError $
             SQL.compileTable
               "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend query
       do
-        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
         results `shouldBe` [["1"]]
       do
-        res <- exec backend "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'Expenses';"
+        res <- exec backend "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'expenses';"
         Result rs cs results <- shouldBeResult res
         rs `shouldBe` 4
         cs `shouldBe` 1
         results `shouldBe` [["id"], ["cost_dollars"], ["cost_cents"], ["is_food"]]
-      _ <- exec backend "DROP TABLE \"Expenses\";"
+      _ <- exec backend "DROP TABLE Expenses;"
       do
-        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
         results `shouldBe` [["0"]]
       pure ()
@@ -355,7 +355,7 @@ queryTests = do
             Right @CompileError $
             SQL.compileTable
               "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
       insert <-
@@ -422,7 +422,7 @@ queryTests = do
             Right @CompileError $
             SQL.compileTable
               "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
       select <-

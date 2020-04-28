@@ -82,7 +82,7 @@ exec conn ps =
       traverse (fmap Builder.byteString . queryPart) ps
     MaybeT $ Postgres.exec conn query
   where
-    queryPart (I s) = MaybeT $ Postgres.escapeIdentifier conn s
+    queryPart (I s) = pure s
     queryPart (V s) = MaybeT $ Postgres.escapeStringConn conn s
     queryPart (S s) = pure s
 

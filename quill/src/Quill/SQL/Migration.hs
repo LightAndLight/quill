@@ -15,7 +15,7 @@ import qualified Capnp.Gen.Migration.Pure as SQL
   )
 import qualified Capnp.Gen.Table.Pure as SQL
   (Column(Column), Constraint(..), Other(Other))
-import Quill.Check (TypeInfo)
+import Quill.Check (TypeInfo, toLower)
 import Quill.Check.Migration (MigrationEnv(..))
 import Quill.SQL (compileTable, compileType)
 import Quill.Syntax (Constraint(..))
@@ -60,7 +60,7 @@ compileCommand :: MigrationEnv -> Command TypeInfo -> SQL.Command
 compileCommand env cmd =
   case cmd of
     CreateTable tableName _ ->
-      case Map.lookup tableName (_meTables env) of
+      case Map.lookup (toLower tableName) (_meTables env) of
         Nothing -> error "impossible: table not found"
         Just info ->
           SQL.Command'createTable $

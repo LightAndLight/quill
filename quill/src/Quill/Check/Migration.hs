@@ -36,6 +36,7 @@ import Quill.Check
   , QueryEnv
   , checkConstraint, mapError
   )
+import Quill.Check (Lowercase, toLower)
 import qualified Quill.Check as Check
 import Quill.Syntax (Constraint(..), Type(..))
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
@@ -45,7 +46,7 @@ data MigrationEnv
   = MigrationEnv
   { _meMigrations :: Map Migration.Name (Migration TypeInfo)
   , _mePath :: Seq Migration.Name
-  , _meTables :: Map Text TableInfo
+  , _meTables :: Map (Lowercase Text) TableInfo
   } deriving (Eq, Show)
 
 emptyMigrationEnv :: MigrationEnv
@@ -248,12 +249,12 @@ checkCommand env command =
         Check.checkTable (toDeclEnv env) tableName fields
       pure
         ( CreateTable tableName fields'
-        , env { _meTables = Map.insert tableName info $ _meTables env }
+        , env { _meTables = Map.insert (toLower tableName) info $ _meTables env }
         )
     AlterTable tableName changes -> do
       entry <-
         maybe (throwError $ TableNotFound tableName) pure $
-        Map.lookup tableName (_meTables env)
+        Map.lookup (toLower tableName) (_meTables env)
       (changes', entry') <-
         foldlM
           (\(cs, e) c -> do
@@ -264,7 +265,7 @@ checkCommand env command =
           changes
       pure
         ( AlterTable tableName $ Vector.fromList (changes' [])
-        , env { _meTables = Map.insert tableName entry' $ _meTables env }
+        , env { _meTables = Map.insert (toLower tableName) entry' $ _meTables env }
         )
   where
     runChange ::

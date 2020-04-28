@@ -37,6 +37,8 @@ module Quill.Check
   , checkDecls
     -- * Misc
   , mapError
+  , Lowercase, unLowercase
+  , toLower
   )
 where
 
@@ -48,6 +50,7 @@ import Control.Lens.Fold ((^?))
 import Control.Monad (unless, when)
 import Control.Monad.Except (ExceptT, MonadError, throwError, runExceptT, withExceptT)
 import Control.Monad.State (MonadState, StateT, evalStateT, runStateT, get, gets, modify, put)
+import qualified Data.Char as Char
 import Data.Foldable (foldl', traverse_)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -55,6 +58,7 @@ import Data.Maybe as Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Text.Lazy as Lazy
 import qualified Data.Text.Lazy.Builder as Builder
 import Data.Vector (Vector)
@@ -127,7 +131,7 @@ data QueryEnv a
   , _qeGlobalVars :: Map Text (Type TypeInfo)
   , _qeGlobalQueries :: Map Text QueryEntry
   , _qeTypes :: Map Text (Type TypeInfo)
-  , _qeTables :: Map Text TableInfo
+  , _qeTables :: Map (Lowercase Text) TableInfo
   }
 
 data Origin
@@ -141,11 +145,19 @@ data Info
   { _infoType :: Type TypeInfo
   } deriving Show
 
+newtype Lowercase a = Lowercase { unLowercase :: a }
+  deriving (Eq, Show, Ord)
+instance Semigroup a => Semigroup (Lowercase a) where; a <> b = Lowercase (unLowercase a <> unLowercase b)
+instance Monoid a => Monoid (Lowercase a) where; mempty = Lowercase mempty
+
+toLower :: Text -> Lowercase Text
+toLower = Lowercase . Text.map Char.toLower
+
 data DeclEnv
   = DeclEnv
   { _deLanguage :: Maybe Language
   , _deTypes :: Map Text (Type TypeInfo)
-  , _deTables :: Map Text TableInfo
+  , _deTables :: Map (Lowercase Text) TableInfo
   , _deGlobalVars :: Map Text (Type TypeInfo)
   , _deGlobalQueries :: Map Text QueryEntry
   } deriving Show
@@ -477,7 +489,7 @@ inferExpr env expr =
     Syntax.SelectFrom table -> do
       info <-
         maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
+        Map.lookup (toLower table) (_qeTables env)
       pure
         ( Syntax.SelectFrom table
         , Syntax.TQuery anyTypeInfo $
@@ -488,14 +500,14 @@ inferExpr env expr =
     Syntax.InsertInto value table -> do
       info <-
         maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
+        Map.lookup (toLower table) (_qeTables env)
       (value', _) <- checkExpr env value (_tiWriteType info)
       pure (Syntax.InsertInto value' table, Syntax.TQuery anyTypeInfo $ Syntax.TUnit anyTypeInfo)
     Syntax.InsertIntoReturning value table -> do
       language env Syntax.Postgresql
       info <-
         maybe (throwError $ TableNotInScope table) pure $
-        Map.lookup table (_qeTables env)
+        Map.lookup (toLower table) (_qeTables env)
       (value', valueTy) <- checkExpr env value (_tiWriteType info)
       let
         !_ =
@@ -827,7 +839,7 @@ checkTable ::
   Vector (TableItem typeInfo) ->
   m (TableInfo, Vector (TableItem TypeInfo))
 checkTable env tableName items = do
-  case Map.lookup tableName (_deTables env) of
+  case Map.lookup (toLower tableName) (_deTables env) of
     Nothing -> pure ()
     Just{} -> throwError $ TableAlreadyDefined tableName
   items' <-
@@ -1001,7 +1013,7 @@ checkDecls e decls = runStateT (traverse go decls) e
       case decl of
         Syntax.Table tableName items -> do
           (info, items') <- mapError TableError (checkTable env tableName items)
-          put $ env { _deTables = Map.insert tableName info (_deTables env) }
+          put $ env { _deTables = Map.insert (toLower tableName) info (_deTables env) }
           pure $ Syntax.Table tableName items'
         Syntax.Type name ty ->
           case Map.lookup name (_deTypes env) of

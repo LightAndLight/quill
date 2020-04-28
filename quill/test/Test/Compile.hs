@@ -182,7 +182,7 @@ compileTests = do
           Right @SQL.CompileError $
           SQL.compileTable
             "Expenses"
-            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+            (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
       Table
         "Expenses"
@@ -230,7 +230,7 @@ compileTests = do
           Right @SQL.CompileError $
           SQL.compileTable
             "Expenses"
-            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+            (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
         Table
           "Expenses"

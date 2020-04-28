@@ -195,7 +195,7 @@ query (QueryEnv backend env) queryName args = do
             case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
           tableInfo <-
             maybe (error "impossible: missing table info") pure $
-            Map.lookup tableName (Check._deTables env)
+            Map.lookup (Check.toLower tableName) (Check._deTables env)
           let expectedNumColumns = Check._tiNumColumns tableInfo
           when (numColumns /= fromIntegral expectedNumColumns) . throw $
             ColumnMismatch expectedNumColumns numColumns rowTy
@@ -233,7 +233,7 @@ createTable :: QueryEnv -> Text -> IO ()
 createTable (QueryEnv backend env) tableName = do
   tableInfo <-
     maybe (throw $ TableNotFound tableName) pure $
-    Map.lookup tableName (Check._deTables env)
+    Map.lookup (Check.toLower tableName) (Check._deTables env)
   let
     table = SQL.compileTable tableName tableInfo
   doneResponse =<< Backend.request backend (Request'createTable table)
