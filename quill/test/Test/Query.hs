@@ -4,7 +4,7 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
-import Capnp.Gen.Migration.Pure (Migration(Migration), Migration'parent(..))
+import Capnp.Gen.Migration.Pure (Command(..), Migration(Migration), Migration'parent(..))
 import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Capnp.Gen.Table.Pure
@@ -14,6 +14,7 @@ import Capnp.Gen.Table.Pure
   )
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
+import Data.Foldable (traverse_)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
@@ -178,6 +179,16 @@ setupDbBlank =
   setupDb
     (\_ -> pure ())
     (\_ -> pure ())
+
+setupDbDeleting :: [ByteString] -> (Backend -> IO ()) -> IO ()
+setupDbDeleting tableNames =
+  setupDb
+    (\_ -> pure ())
+    (\backend ->
+      traverse_
+        (\tableName -> shouldBeDone =<< exec backend ("DROP TABLE IF EXISTS " <> tableName <> ";"))
+        tableNames
+    )
 
 setupDbQuery :: (Backend -> IO ()) -> IO ()
 setupDbQuery =
@@ -504,8 +515,8 @@ queryTests = do
           , ("is_food", Bool False)
           ]
         ]
-  around setupDbBlank . describe "Migrations" $ do
-    it "initial setup works" $ \backend -> do
+  around (setupDbDeleting ["quill_migrations"]) . describe "Initial migration setup works" $ do
+    it "1" $ \backend -> do
       let
         m =
           Migration
@@ -516,7 +527,49 @@ queryTests = do
       Result rows cols data_ <-
         shouldBeResult =<<
         exec backend "SELECT table_name FROM information_schema.tables WHERE table_name = 'quill_migrations';"
-      shouldBeDone =<< exec backend "DROP TABLE quill_migrations;"
       rows `shouldBe` 1
       cols `shouldBe` 1
       data_ `shouldBe` [["quill_migrations"]]
+  around (setupDbDeleting ["quill_migrations"]) . describe "Initial migration fails the second time" $ do
+    it "1" $ \backend -> do
+      let
+        m =
+          Migration
+            "initial"
+            Migration'parent'none
+            []
+      shouldBeDone =<< Backend.request backend (Request'migrate m)
+      res <- Backend.request backend (Request'migrate m)
+      case res of
+        Response'error val -> val `shouldBe` "ERROR:  relation \"quill_migrations\" already exists\n"
+        _ -> expectationFailure $ "Expected 'error', got: " <> show res
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Creating a table in initial migration" $ do
+    it "1" $ \backend -> do
+      let
+        m =
+          Migration
+            "initial"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 3
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "text", "YES"]
+        ]
