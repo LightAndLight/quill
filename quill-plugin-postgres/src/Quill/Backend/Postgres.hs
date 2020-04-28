@@ -82,9 +82,14 @@ exec conn ps =
       traverse (fmap Builder.byteString . queryPart) ps
     MaybeT $ Postgres.exec conn query
   where
-    queryPart (I s) = MaybeT $ Postgres.escapeStringConn conn s
+    queryPart (I s) = MaybeT $ Postgres.escapeIdentifier conn s
     queryPart (V s) = MaybeT $ Postgres.escapeStringConn conn s
     queryPart (S s) = pure s
+
+mkSeqName :: ByteString -> ByteString -> ByteString
+mkSeqName tableName colName =
+  tableName <> "_" <>
+  colName <> "_seq"
 
 createTable :: Table -> [QueryPart]
 createTable (Table tableName columns constraints) =
@@ -98,8 +103,6 @@ createTable (Table tableName columns constraints) =
   [S ");"] <>
   alterSequences columns
   where
-    mkSeqName colName = I $ tableName <> "_" <> colName <> "_seq"
-
     createSequences :: Vector Column -> [QueryPart]
     createSequences =
       foldMap
@@ -107,7 +110,7 @@ createTable (Table tableName columns constraints) =
           if autoIncrement
           then
             [ S "CREATE SEQUENCE "
-            , mkSeqName colName
+            , I $ mkSeqName tableName colName
             , S ";\n"
             ]
           else
@@ -120,7 +123,7 @@ createTable (Table tableName columns constraints) =
           if autoIncrement
           then
             [ S "ALTER SEQUENCE "
-            , mkSeqName colName
+            , I $ mkSeqName tableName colName
             , S " OWNED BY "
             , I tableName
             , S "."
@@ -135,13 +138,13 @@ createTable (Table tableName columns constraints) =
     createColumn (Column colName colTy notNull autoIncrement) =
       [ I colName
       , S " "
-      , I colTy
+      , V colTy
       ] <>
       (if notNull then [S " NOT NULL"] else []) <>
       (if autoIncrement
        then
          [ S " DEFAULT nextval('"
-         , I $ tableName <> "_" <> colName <> "_seq"
+         , I $ mkSeqName tableName colName
          , S "')"
          ]
        else []
@@ -166,21 +169,21 @@ compileChange tableName change =
     TableChange'unknown' tag -> gotUnknown "TableChange" tag
     TableChange'addColumn (Column colName colType notNull autoIncrement) ->
       let
-        seqName = I $ tableName <> "_" <> colName <> "_seq"
+        seqName = mkSeqName tableName colName
       in
         (if autoIncrement
-         then [S "CREATE SEQUENCE ", seqName, S ";\n"]
+         then [S "CREATE SEQUENCE ", I seqName, S ";\n"]
          else mempty
         ) <>
-        [S "ALTER TABLE ", I tableName, S " ADD ", I colName, S " ", I colType] <>
+        [S "ALTER TABLE ", I tableName, S " ADD ", I colName, S " ", V colType] <>
         (if notNull then [S " NOT NULL"] else []) <>
         (if autoIncrement
-         then [I " DEFAULT nextval('", seqName, S "')"]
+         then [S " DEFAULT nextval('", I seqName, S "')"]
          else []
         ) <>
         [S ";\n"] <>
         (if autoIncrement
-         then [S "ALTER SEQUENCE ", seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"]
+         then [S "ALTER SEQUENCE ", I seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"]
          else mempty
         )
     TableChange'dropColumn colName ->
@@ -198,12 +201,12 @@ compileChange tableName change =
             [ S ")", S ";\n"]
         Constraint'autoIncrement colName ->
           let
-            seqName = I $ tableName <> "_" <> colName <> "_seq"
+            seqName = mkSeqName tableName colName
           in
-            [ S "CREATE SEQUENCE ", seqName, S ";\n"
+            [ S "CREATE SEQUENCE ", I seqName, S ";\n"
             , S "ALTER TABLE ", I tableName, S " ALTER COLUMN ", I colName
-            , S " SET DEFAULT nextval('", seqName, S "');\n"
-            , S "ALTER SEQUENCE ", seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"
+            , S " SET DEFAULT nextval('", I seqName, S "');\n"
+            , S "ALTER SEQUENCE ", I seqName, S " OWNED BY ", I tableName, S ".", I colName, S ";\n"
             ]
         Constraint'other (Other constrName args) -> error "can't compile Other" constrName args
 
@@ -348,7 +351,7 @@ handleRequest config sock req =
           let
             selectParent =
               Postgres.exec conn $
-              "SELECT name FROM quill_migrations WHERE " <>
+              "SELECT name FROM quill_migrations " <>
               "ORDER BY id DESC LIMIT 1;"
           in
             withResult conn selectParent $ \result -> do

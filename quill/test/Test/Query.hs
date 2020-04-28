@@ -4,7 +4,11 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
-import Capnp.Gen.Migration.Pure (Command(..), Migration(Migration), Migration'parent(..))
+import Capnp.Gen.Migration.Pure
+  ( AlterTable(AlterTable), Command(..)
+  , Migration(Migration), Migration'parent(..)
+  , TableChange(..)
+  )
 import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Capnp.Gen.Table.Pure
@@ -93,7 +97,7 @@ exec backend = Backend.request backend . Request'exec
 createTable :: Backend -> Table -> IO Response
 createTable backend = Backend.request backend . Request'createTable
 
-shouldBeDone :: Response -> IO ()
+shouldBeDone :: HasCallStack => Response -> IO ()
 shouldBeDone res =
   case res of
     Response'done -> pure ()
@@ -103,8 +107,7 @@ setupDbDecode :: (Backend -> IO ()) -> IO ()
 setupDbDecode =
   setupDb
     (\backend -> do
-       _ <-
-         (shouldBeDone =<<) . createTable backend $
+       (shouldBeDone =<<) . createTable backend $
          Table
            "Persons"
            [ Column
@@ -128,14 +131,13 @@ setupDbDecode =
            ]
            [ Constraint'primaryKey ["id"] ]
 
-       _ <- exec backend $
+       (shouldBeDone =<<) . exec backend $
          Char8.unlines
-         [ "INSERT INTO Persons ( age, checked )"
+         [ "INSERT INTO \"Persons\" ( age, checked )"
          , "VALUES ( 10, true ), ( 11, false ), ( 12, true );"
          ]
 
-       _ <-
-         (shouldBeDone =<<) . createTable backend $
+       (shouldBeDone =<<) . createTable backend $
          Table
            "Nested"
            [ Column
@@ -159,18 +161,18 @@ setupDbDecode =
            ]
            []
 
-       _ <- exec backend $
+       (shouldBeDone =<<) . exec backend $
          Char8.unlines
-         [ "INSERT INTO Nested ( a, nest_b, nest_c )"
+         [ "INSERT INTO \"Nested\" ( a, nest_b, nest_c )"
          , "VALUES ( 11, 100, true ), ( 22, 200, false ), ( 33, 300, true );"
          ]
 
        pure ()
     )
     (\backend -> do
-       _ <- exec backend "DROP TABLE Nested;"
-       _ <- exec backend "DROP TABLE Persons;"
-       _ <- exec backend "DROP SEQUENCE Persons_id_seq;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Nested\";"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Persons\";"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS \"Persons_id_seq\";"
        pure ()
     )
 
@@ -195,9 +197,10 @@ setupDbQuery =
   setupDb
     (\_ -> pure ())
     (\backend -> do
-       _ <- exec backend "DROP TABLE Expenses;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"Expenses\";"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS \"Expenses_id_seq\";"
        do
-         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
          case res of
            Response'result (Result _ _ results) -> results `shouldBe` [["0"]]
            _ -> do
@@ -252,7 +255,7 @@ compile
                       -- print code
                       pure code
 
-shouldBeResult :: Response -> IO Result
+shouldBeResult :: HasCallStack => Response -> IO Result
 shouldBeResult res =
   case res of
     Response'result res' -> pure res'
@@ -262,7 +265,7 @@ queryTests :: Spec
 queryTests = do
   around setupDbDecode . describe "decode" $ do
     it "decodeRecord 1" $ \backend -> do
-      res <- exec backend "SELECT * FROM Persons;"
+      res <- exec backend "SELECT * FROM \"Persons\";"
       let fields = [("id", TInt ()), ("age", TInt ()), ("checked", TBool ())]
       Result _ _ results <- shouldBeResult res
       one <- Query.decodeRecord (results Vector.! 0) fields
@@ -272,7 +275,7 @@ queryTests = do
       two `shouldBe` Record [("id", Int 2), ("age", Int 11), ("checked", Bool False)]
       three `shouldBe` Record [("id", Int 3), ("age", Int 12), ("checked", Bool True)]
     it "decodeRecord 2" $ \backend -> do
-      res <- exec backend "SELECT * FROM Nested;"
+      res <- exec backend "SELECT * FROM \"Nested\";"
       let fields = [("a", TInt ()), ("nest", TRecord () [("b", TInt ()), ("c", TBool ())])]
       Result _ _ results <- shouldBeResult res
       one <- Query.decodeRecord (results Vector.! 0) fields
@@ -309,20 +312,20 @@ queryTests = do
               "Expenses"
               (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- createTable backend query
+      shouldBeDone =<< createTable backend query
       do
-        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
         Result _ _ results <- shouldBeResult res
         results `shouldBe` [["1"]]
       do
-        res <- exec backend "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'expenses';"
+        res <- exec backend "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'Expenses';"
         Result rs cs results <- shouldBeResult res
         rs `shouldBe` 4
         cs `shouldBe` 1
         results `shouldBe` [["id"], ["cost_dollars"], ["cost_cents"], ["is_food"]]
-      _ <- exec backend "DROP TABLE Expenses;"
+      _ <- exec backend "DROP TABLE \"Expenses\";"
       do
-        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+        res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
         Result _ _ results <- shouldBeResult res
         results `shouldBe` [["0"]]
       pure ()
@@ -354,7 +357,7 @@ queryTests = do
               "Expenses"
               (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- createTable backend create
+      shouldBeDone =<< createTable backend create
       insert <-
         compile $
         Compile
@@ -388,8 +391,7 @@ queryTests = do
         }
       _ <- exec backend insert
       do
-        res <- exec backend "SELECT * FROM Expenses;"
-        Result rs cs results <- shouldBeResult res
+        Result rs cs results <- shouldBeResult =<< exec backend "SELECT * FROM Expenses;"
         rs `shouldBe` 1
         cs `shouldBe` 4
         results `shouldBe` [["1", "2", "3", "t"]]
@@ -422,7 +424,7 @@ queryTests = do
               "Expenses"
               (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
         }
-      _ <- createTable backend create
+      shouldBeDone =<< createTable backend create
       select <-
         compile $
         Compile
@@ -466,10 +468,9 @@ queryTests = do
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
             SQL.expr env absurd e
         }
-      _ <- exec backend "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
+      shouldBeDone =<< exec backend "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
       do
-        res <- exec backend select
-        Result rs cs results <- shouldBeResult res
+        Result rs cs results <- shouldBeResult =<< exec backend select
         rs `shouldBe` 1
         cs `shouldBe` 4
         results `shouldBe` [["1", "22", "33", "f"]]
@@ -572,4 +573,46 @@ queryTests = do
         [ ["id", "integer", "NO"]
         , ["a", "boolean", "NO"]
         , ["b", "text", "YES"]
+        ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Add autoincrementable field in migration" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            (Migration'parent'some "initial")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addColumn $ Column "c" "INTEGER" True True
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 4
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "text", "YES"]
+        , ["c", "integer", "NO"]
         ]
