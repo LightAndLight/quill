@@ -309,7 +309,7 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
+              (Check.toLower "Expenses")
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend query
@@ -354,7 +354,7 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
+              (Check.toLower "Expenses")
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
@@ -421,7 +421,7 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
+              (Check.toLower "Expenses")
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
@@ -616,3 +616,34 @@ queryTests = do
         , ["b", "text", "YES"]
         , ["c", "integer", "NO"]
         ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Prerequisite checking works" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            (Migration'parent'some "not_initial")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addColumn $ Column "c" "INTEGER" True True
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      res <- Backend.request backend (Request'migrate m2)
+      case res of
+        Response'error err -> err `shouldBe` "Most recent migration is 'initial', not 'not_initial'"
+        _ -> expectationFailure $ "Expected 'error', got: " <> show res

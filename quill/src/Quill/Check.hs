@@ -105,10 +105,10 @@ data TypeError exprInfo
 -- a concrete column name and type.
 data ColumnInfo
   = Names (Vector (Text, ColumnInfo))
-  | Name Text (Type TypeInfo)
+  | Name (Lowercase Text) (Type TypeInfo)
   deriving (Eq, Show)
 
-flattenColumnInfo :: ColumnInfo -> Vector (Text, Type TypeInfo)
+flattenColumnInfo :: ColumnInfo -> Vector (Lowercase Text, Type TypeInfo)
 flattenColumnInfo f =
   case f of
     Name n ty -> [(n, ty)]
@@ -910,7 +910,7 @@ mkColumnInfo = traverse (\(f, v) -> (,) f <$> go (Builder.fromText f) v)
           Names <$> traverse (\(f, v) -> (,) f <$> go (n <> "_" <> Builder.fromText f) v) ns'
         _ -> do
           modify (+1)
-          pure $ Name (Lazy.toStrict $ Builder.toLazyText n) ty
+          pure $ Name (toLower . Lazy.toStrict $ Builder.toLazyText n) ty
 
 mkReadField ::
   MonadError (TypeError exprInfo) m =>

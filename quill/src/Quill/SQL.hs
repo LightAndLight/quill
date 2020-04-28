@@ -249,7 +249,7 @@ query env f e =
 projectFieldNames :: Expr -> Check.ColumnInfo -> Expr
 projectFieldNames value columnInfo =
   case columnInfo of
-    Check.Name n _ -> Project value $ toLower n
+    Check.Name n _ -> Project value n
     Check.Names ns -> Row $ fmap (bimap toLower $ projectFieldNames value) ns
 
 expr ::
@@ -329,17 +329,17 @@ compileType ty =
     Syntax.TName{} -> error "SQL.compileType: found TOptional"
     Syntax.TInt{} -> "INTEGER"
 
-compileTable :: Text -> Check.TableInfo -> SQL.Table
+compileTable :: Lowercase Text -> Check.TableInfo -> SQL.Table
 compileTable tableName tableInfo =
   let
     (_, colInfos, constraints) = gatherConstraints $ Check._tiItems tableInfo
   in
     SQL.Table
-      (encodeUtf8 tableName)
+      (encodeUtf8 $ unLowercase tableName)
       (fmap
           (\(n, ty) ->
             SQL.Column
-            { SQL.name = encodeUtf8 n
+            { SQL.name = encodeUtf8 $ unLowercase n
             , SQL.type_ = compileType ty
             , SQL.notNull = True
             , SQL.autoIncrement =
@@ -361,7 +361,7 @@ compileTable tableName tableInfo =
       Vector (Syntax.TableItem Check.TypeInfo) ->
       ( [Text]
       , Map
-          Text -- column name
+          (Lowercase Text) -- column name
           ( Type Check.TypeInfo -- column type
           , [Syntax.Constraint] -- unary constraints
           )
@@ -373,7 +373,7 @@ compileTable tableName tableInfo =
            case i of
              Syntax.Field fieldName ty ->
                ( cols ++ [fieldName]
-               , Map.insert fieldName (ty, []) info
+               , Map.insert (toLower fieldName) (ty, []) info
                , constrs
                )
              Syntax.Constraint constr args
@@ -381,7 +381,7 @@ compileTable tableName tableInfo =
                  ( cols
                  , Map.adjust
                      (\(ty, cs) -> (ty, cs ++ [ constr ]))
-                     (args Vector.! 0)
+                     (toLower $ args Vector.! 0)
                      info
                  , constrs
                  )

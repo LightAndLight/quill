@@ -38,7 +38,7 @@ data CompileTest where
     } ->
     CompileTest
 
-compileTest :: CompileTest -> IO ()
+compileTest :: HasCallStack => CompileTest -> IO ()
 compileTest
   (CompileTest
    { compile_prelude = prelude
@@ -181,11 +181,11 @@ compileTests = do
         \_ (_, env) ->
           Right @SQL.CompileError $
           SQL.compileTable
-            "Expenses"
+            (Check.toLower "Expenses")
             (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
       Table
-        "Expenses"
+        "expenses"
         [ Column
           { name = "id"
           , type_ = "INTEGER"
@@ -229,11 +229,11 @@ compileTests = do
         \_ (_, env) ->
           Right @SQL.CompileError $
           SQL.compileTable
-            "Expenses"
+            (Check.toLower "Expenses")
             (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
         Table
-          "Expenses"
+          "expenses"
           [ Column
             { name = "id"
             , type_ = "INTEGER"

@@ -231,9 +231,9 @@ query (QueryEnv backend env) queryName args = do
 
 createTable :: QueryEnv -> Text -> IO ()
 createTable (QueryEnv backend env) tableName = do
+  let tableNameLower = Check.toLower tableName
   tableInfo <-
     maybe (throw $ TableNotFound tableName) pure $
-    Map.lookup (Check.toLower tableName) (Check._deTables env)
-  let
-    table = SQL.compileTable tableName tableInfo
+    Map.lookup tableNameLower (Check._deTables env)
+  let table = SQL.compileTable tableNameLower tableInfo
   doneResponse =<< Backend.request backend (Request'createTable table)
