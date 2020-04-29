@@ -97,6 +97,15 @@ exec backend = Backend.request backend . Request'exec
 createTable :: Backend -> Table -> IO Response
 createTable backend = Backend.request backend . Request'createTable
 
+sequenceShouldExist :: HasCallStack => Backend -> ByteString -> IO ()
+sequenceShouldExist backend seqName = do
+  Result rows cols data_ <-
+    shouldBeResult =<<
+    exec backend ("SELECT COUNT(*) FROM information_schema.sequences WHERE sequence_name = '" <> seqName <> "'")
+  rows `shouldBe` 1
+  cols `shouldBe` 1
+  data_ `shouldBe` [["1"]]
+
 shouldBeDone :: HasCallStack => Response -> IO ()
 shouldBeDone res =
   case res of
@@ -130,6 +139,8 @@ setupDbDecode =
              }
            ]
            [ Constraint'primaryKey ["id"] ]
+
+       sequenceShouldExist backend "persons_id_seq"
 
        (shouldBeDone =<<) . exec backend $
          Char8.unlines
@@ -175,12 +186,6 @@ setupDbDecode =
        shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS Persons_id_seq;"
        pure ()
     )
-
-setupDbBlank :: (Backend -> IO ()) -> IO ()
-setupDbBlank =
-  setupDb
-    (\_ -> pure ())
-    (\_ -> pure ())
 
 setupDbDeleting :: [ByteString] -> (Backend -> IO ()) -> IO ()
 setupDbDeleting tableNames =
@@ -284,7 +289,7 @@ queryTests = do
       one `shouldBe` Record [("a", Int 11), ("nest", Record [("b", Int 100), ("c", Bool True)])]
       two `shouldBe` Record [("a", Int 22), ("nest", Record [("b", Int 200), ("c", Bool False)])]
       three `shouldBe` Record [("a", Int 33), ("nest", Record [("b", Int 300), ("c", Bool True)])]
-  around setupDbBlank . describe "create table" $ do
+  around (setupDbDeleting ["Expenses"]) . describe "create table" $ do
     it "1" $ \backend -> do
       query <-
         compile $
@@ -313,6 +318,7 @@ queryTests = do
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend query
+      sequenceShouldExist backend "expenses_id_seq"
       do
         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
@@ -323,7 +329,7 @@ queryTests = do
         rs `shouldBe` 4
         cs `shouldBe` 1
         results `shouldBe` [["id"], ["cost_dollars"], ["cost_cents"], ["is_food"]]
-      _ <- exec backend "DROP TABLE Expenses;"
+      shouldBeDone =<< exec backend "DROP TABLE Expenses;"
       do
         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
@@ -358,6 +364,7 @@ queryTests = do
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
+      sequenceShouldExist backend "expenses_id_seq"
       insert <-
         compile $
         Compile
@@ -425,6 +432,7 @@ queryTests = do
               (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
       shouldBeDone =<< createTable backend create
+      sequenceShouldExist backend "expenses_id_seq"
       select <-
         compile $
         Compile
@@ -497,6 +505,7 @@ queryTests = do
         , "}"
         ]
       Query.createTable qe "Expenses"
+      sequenceShouldExist backend "expenses_id_seq"
       insertRes <-
         Query.query
           qe
@@ -561,6 +570,7 @@ queryTests = do
                 []
             ]
       shouldBeDone =<< Backend.request backend (Request'migrate m)
+      sequenceShouldExist backend "my_table_id_seq"
       Result rows cols data_ <-
         shouldBeResult =<<
         exec backend
@@ -601,7 +611,9 @@ queryTests = do
                 ]
             ]
       shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
       shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      sequenceShouldExist backend "my_table_c_seq"
       Result rows cols data_ <-
         shouldBeResult =<<
         exec backend
@@ -643,6 +655,7 @@ queryTests = do
                 ]
             ]
       shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
       res <- Backend.request backend (Request'migrate m2)
       case res of
         Response'error err -> err `shouldBe` "Most recent migration is 'initial', not 'not_initial'"
