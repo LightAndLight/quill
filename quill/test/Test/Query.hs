@@ -660,3 +660,87 @@ queryTests = do
       case res of
         Response'error err -> err `shouldBe` "Most recent migration is 'initial', not 'not_initial'"
         _ -> expectationFailure $ "Expected 'error', got: " <> show res
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Drop field" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            (Migration'parent'some "initial")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'dropColumn "b"
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 2
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Add constraint" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "INTEGER" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            (Migration'parent'some "initial")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addConstraint $ Constraint'autoIncrement "b"
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      sequenceShouldExist backend "my_table_b_seq"
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 3
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "integer", "YES"]
+        ]
