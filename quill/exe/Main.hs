@@ -1,6 +1,8 @@
+{-# language BangPatterns #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 {-# language TemplateHaskell #-}
+{-# language TypeApplications #-}
 module Main where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
@@ -11,21 +13,38 @@ import Control.Exception (bracket)
 import Control.Lens.TH (makeLenses)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as Char8
+import Data.Foldable (foldlM, for_)
 import Data.Functor (void)
+import Data.Graph as Graph
+import Data.Map as Map
+import Data.Maybe as Maybe
+import Data.Void (Void)
 import GHC.Exts (fromString)
 import Network.Socket (Socket)
 import qualified Network.Socket as Socket
 import Options.Applicative
+import qualified System.Directory as Directory
 import System.Environment (lookupEnv)
+import System.Exit (exitFailure, exitSuccess)
+import System.FilePath ((</>))
 import qualified System.IO as IO
 import qualified System.Process as Process
 import Text.Read (readMaybe)
 
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
+import qualified Quill.Check.Migration as Check
+import qualified Quill.Parser as Parser (parseFile, eof)
+import qualified Quill.Parser.Migration as Parser (migration)
+import qualified Quill.SQL.Migration as SQL
+import qualified Quill.Syntax.Migration as Migration
+
+quillfiles :: FilePath
+quillfiles = "./quillfiles"
 
 data Command
   = DebugPlugin
+  | Migrate
 
 data Config
   = Config
@@ -52,12 +71,20 @@ configParser =
     (command "debug-plugin"
      (info debugPluginParser $
       fullDesc <> progDesc "Use the plugin in 'echo' mode for debugging purposes"
+     ) <>
+     command "migrate"
+     (info migrateParser $
+      fullDesc <> progDesc "Migrate a database"
      )
     )
   where
     debugPluginParser :: Parser Command
     debugPluginParser =
       pure DebugPlugin
+
+    migrateParser :: Parser Command
+    migrateParser =
+      pure Migrate
 
 main :: IO ()
 main = do
@@ -105,3 +132,53 @@ server cmd backend =
               loop
       in
         loop
+    Migrate -> do
+      migrationsFile <- Directory.makeAbsolute $ quillfiles </> "migrations.quillm"
+      migrations <-
+        either error pure =<<
+        Parser.parseFile (some Parser.migration <* Parser.eof) migrationsFile
+      let
+        (migrationGraph, fromVertex, toVertex) =
+          Graph.graphFromEdges $
+          (\migration ->
+             (migration, Migration._mName migration, maybe [] pure $ Migration._mParent migration)
+          ) <$>
+          migrations
+      -- calculate the roots of the graph and run them through checkMigrations
+      let
+        roots :: [Migration.Name]
+        roots = _
+      migrationEnv <-
+        foldlM
+          (\acc next ->
+            either (error . show) pure $
+            Check.checkMigrations @() @Void migrations acc next
+          )
+          Check.emptyMigrationEnv
+          roots
+      let
+        migrationOrder :: [Migration.Name]
+        migrationOrder =
+          fmap ((\(_, b, _) -> b) . fromVertex) .
+          -- vertex a is before vertex b when there is an edge from a to b
+          Graph.topSort $
+          -- parents should be run before children, so vertices should run from parent to child, hence transpose
+          Graph.transposeG migrationGraph
+      for_ migrationOrder $ \migrationName -> do
+        putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
+        let
+          !compiled =
+            SQL.compileMigration
+              migrationEnv
+              (Maybe.fromJust $ Map.lookup migrationName (Check._meMigrations migrationEnv))
+        res <- Backend.request backend $ Request.Request'migrate compiled
+        case res of
+          Response.Response'done -> pure ()
+          Response.Response'error err -> do
+            putStrLn . Char8.unpack $ err
+            exitFailure
+          _ -> do
+            putStrLn $ "Unexpected response from backend: " <> show res
+            exitFailure
+      putStrLn "All migrations successful!"
+      exitSuccess

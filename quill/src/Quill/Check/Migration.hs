@@ -322,7 +322,7 @@ checkMigration check env (Migration name m_parent commands) = do
 
 checkMigrations ::
   MonadError (MigrationError typeInfo exprInfo) m =>
-  Vector (Migration typeInfo) ->
+  [Migration typeInfo] ->
   MigrationEnv ->
   Migration.Name ->
   m MigrationEnv
