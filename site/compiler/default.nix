@@ -1,6 +1,6 @@
 /*
 
-`hakyll`
+`compiler`
 
 The static site compiler
 
@@ -18,8 +18,8 @@ Outputs:
 
 let
   haskellPackages = (import ../../nix/projectEnv).haskell;
-  site = haskellPackages.callPackage ./site.nix {};
+  compiler = haskellPackages.callPackage ./compiler.nix {};
 in
-  site // {
-    exe = site.out + "/bin/site";
+  compiler // {
+    exe = compiler.out + "/bin/compiler";
   }

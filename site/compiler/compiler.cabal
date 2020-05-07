@@ -1,10 +1,10 @@
-name:               site
+name:               compiler
 version:            0.1.0.0
 build-type:         Simple
 cabal-version:      >= 1.10
 
-executable site
-  main-is:          site.hs
+executable compiler
+  main-is:          compiler.hs
   build-depends:    base == 4.*
                   , hakyll == 4.13.*
   ghc-options:      -threaded

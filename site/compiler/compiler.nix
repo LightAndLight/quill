@@ -1,6 +1,6 @@
 { mkDerivation, base, hakyll, stdenv }:
 mkDerivation {
-  pname = "site";
+  pname = "compiler";
   version = "0.1.0.0";
   src = ./.;
   isLibrary = false;

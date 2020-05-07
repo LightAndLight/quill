@@ -1,7 +1,7 @@
 #! /usr/bin/env sh
 
-nix-build ./hakyll
+nix-build ./compiler
 
-exe=$(nix eval "(import ./hakyll).exe")
+exe=$(nix eval "(import ./compiler).exe")
 
-cd ./src; nix-shell --run "$exe watch" ../hakyll
+cd ./src; nix-shell --run "$exe watch" ../compiler

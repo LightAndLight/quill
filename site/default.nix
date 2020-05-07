@@ -18,14 +18,14 @@ Outputs:
 
 let
   stdenv = (import ../nix/projectEnv).stdenv;
-  hakyll = import ./hakyll;
+  compiler = import ./compiler;
 in
   stdenv.mkDerivation {
     name = "site";
     src = ./src;
     buildPhase = ''
-      ${hakyll.exe} clean
-      ${hakyll.exe} build
+      ${compiler.exe} clean
+      ${compiler.exe} build
     '';
     installPhase = ''
       mkdir -p $out
