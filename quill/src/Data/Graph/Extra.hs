@@ -6,7 +6,6 @@ import Data.Graph (Graph, Vertex)
 import qualified Data.Graph as Graph
 import Data.Map (Map)
 import qualified Data.Map as Map
-import qualified Data.Maybe as Maybe
 import Data.Set (Set)
 
 roots ::
@@ -26,20 +25,22 @@ roots graph fromVertex toVertex = Map.keysSet finalChecked
 
     markReachable :: Map Vertex Bool -> key -> Map Vertex Bool
     markReachable checked key =
-      let
-        v = Maybe.fromJust $ toVertex key
-        (m_visited, checked') = Map.updateLookupWithKey (\_ _ -> Nothing) v checked
-      in
-        case m_visited of
-          Nothing -> checked'
-          Just visited ->
-            if visited
-            then checked'
-            else
-              let
-                (_, _, nexts) = fromVertex v
-              in
-                foldl' markReachable checked' nexts
+      case toVertex key of
+        Nothing -> checked
+        Just v ->
+          let
+            (m_visited, checked') = Map.updateLookupWithKey (\_ _ -> Nothing) v checked
+          in
+            case m_visited of
+              Nothing -> checked'
+              Just visited ->
+                if visited
+                then checked'
+                else
+                  let
+                    (_, _, nexts) = fromVertex v
+                  in
+                    foldl' markReachable checked' nexts
 
     -- 1. For each vertex in the graph
     -- 2. Find the vertices that are directly reachable from it

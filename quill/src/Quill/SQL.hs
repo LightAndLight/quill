@@ -324,9 +324,9 @@ compileType ty =
     Syntax.TUnit{} -> error "SQL.compileType: found TUnit"
     Syntax.TBool{} -> "BOOLEAN"
     Syntax.TMany{} -> error "SQL.compileType: found TMany"
-    Syntax.TQuery{} -> error "SQL.compileType: found TMany"
+    Syntax.TQuery{} -> error "SQL.compileType: found TQuery"
     Syntax.TOptional{} -> error "SQL.compileType: found TOptional"
-    Syntax.TName{} -> error "SQL.compileType: found TOptional"
+    Syntax.TName{} -> error "SQL.compileType: found TName"
     Syntax.TInt{} -> "INTEGER"
 
 compileTable :: Lowercase Text -> Check.TableInfo -> SQL.Table

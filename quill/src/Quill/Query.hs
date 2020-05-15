@@ -31,7 +31,6 @@ import Data.Foldable (foldlM, for_)
 import qualified Data.Graph as Graph
 import Data.Int (Int64)
 import qualified Data.Map as Map
-import qualified Data.Maybe as Maybe
 import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
@@ -291,5 +290,8 @@ migrate backend migrations = do
       !compiled =
         SQL.compileMigration
           migrationEnv
-          (Maybe.fromJust $ Map.lookup migrationName (Check._meMigrations migrationEnv))
+          (case Map.lookup migrationName (Check._meMigrations migrationEnv) of
+             Nothing -> error $ "Migration " <> show migrationName <> " missing from environment"
+             Just migration -> migration
+          )
     doneResponse =<< Backend.request backend (Request'migrate compiled)

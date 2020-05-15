@@ -9,6 +9,7 @@ import Test.Compile (compileTests)
 import Test.Check (convertTests, checkTests, doesn'tCheckTests)
 import Test.Graph (graphTests)
 import qualified Test.Check.Migration as Migration (checkTests)
+import Test.Migrate (migrateTests)
 import Test.Parse (parseTests)
 import Test.Query (queryTests)
 
@@ -23,4 +24,5 @@ main =
     describe "doesn't check" doesn'tCheckTests
     describe "migration" $ do
       describe "check" Migration.checkTests
+      migrateTests
     queryTests
