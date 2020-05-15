@@ -84,10 +84,13 @@ executable quill-dummy
 test-suite quill-tests
   type:                exitcode-stdio-1.0
   main-is:             Main.hs
-  other-modules:       Test.Compile
+  other-modules:       Database
+                     , Expectations
+                     , Test.Compile
                      , Test.Check
                      , Test.Check.Migration
                      , Test.Graph
+                     , Test.Migrate
                      , Test.Parse
                      , Test.Query
   build-depends:       base ^>=4.12.0.0
