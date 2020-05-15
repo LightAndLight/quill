@@ -2,7 +2,6 @@
 module Test.Check.Migration (checkTests) where
 
 import Control.Applicative (some)
-import qualified Data.Vector as Vector
 import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
 import Quill.Check (TypeInfo(..))
@@ -29,7 +28,7 @@ check args =
     Right ms ->
       _check_outcome args $
       Check.checkMigrations
-        (Vector.fromList ms)
+        ms
         Check.emptyMigrationEnv
         (_check_root args)
 

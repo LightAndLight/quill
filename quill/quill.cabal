@@ -15,7 +15,8 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Quill.Backend
+  exposed-modules:     Data.Graph.Extra
+                     , Quill.Backend
                      , Quill.Check
                      , Quill.Check.Migration
                      , Quill.Marshall
@@ -86,6 +87,7 @@ test-suite quill-tests
   other-modules:       Test.Compile
                      , Test.Check
                      , Test.Check.Migration
+                     , Test.Graph
                      , Test.Parse
                      , Test.Query
   build-depends:       base ^>=4.12.0.0

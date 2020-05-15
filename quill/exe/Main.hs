@@ -1,34 +1,28 @@
 {-# language BangPatterns #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
 {-# language TypeApplications #-}
 module Main where
 
-import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import qualified Capnp.Gen.Request.Pure as Request
 import qualified Capnp.Gen.Response.Pure as Response
-import Control.Concurrent (forkIO)
-import Control.Exception (bracket)
 import Control.Lens.TH (makeLenses)
-import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as Char8
 import Data.Foldable (foldlM, for_)
-import Data.Functor (void)
-import Data.Graph as Graph
-import Data.Map as Map
-import Data.Maybe as Maybe
+import qualified Data.Graph as Graph
+import qualified Data.Graph.Extra as Graph (roots)
+import qualified Data.Map as Map
+import qualified Data.Maybe as Maybe
 import Data.Void (Void)
 import GHC.Exts (fromString)
-import Network.Socket (Socket)
-import qualified Network.Socket as Socket
 import Options.Applicative
 import qualified System.Directory as Directory
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 import qualified System.IO as IO
-import qualified System.Process as Process
 import Text.Read (readMaybe)
 
 import Quill.Backend (Backend)
@@ -98,9 +92,9 @@ main = do
   m_port <-
     case _cfgDbPort config of
       Nothing -> pure Nothing
-      Just str ->
-        case readMaybe str of
-          Nothing -> error $ "'" <> str <> "' is not a number"
+      Just portStr ->
+        case readMaybe portStr of
+          Nothing -> error $ "'" <> portStr <> "' is not a number"
           Just port -> pure $ Just port
   Backend.withBackendProcess
     (fromString $ "quill-" <> _cfgBackend config)
@@ -138,16 +132,22 @@ server cmd backend =
         either error pure =<<
         Parser.parseFile (some Parser.migration <* Parser.eof) migrationsFile
       let
-        (migrationGraph, fromVertex, toVertex) =
+        (parentGraph, fromVertex, toVertex) =
           Graph.graphFromEdges $
           (\migration ->
              (migration, Migration._mName migration, maybe [] pure $ Migration._mParent migration)
           ) <$>
           migrations
-      -- calculate the roots of the graph and run them through checkMigrations
+        childGraph = Graph.transposeG parentGraph
+        -- in parentGraph, the edges go from child to parent
+        -- in childGraph, the edges go from parent to child
       let
         roots :: [Migration.Name]
-        roots = _
+        roots =
+          foldr
+            (\v rest -> case fromVertex v of; (_, k, _) -> k : rest)
+            []
+            (Graph.roots childGraph fromVertex toVertex)
       migrationEnv <-
         foldlM
           (\acc next ->
@@ -160,10 +160,10 @@ server cmd backend =
         migrationOrder :: [Migration.Name]
         migrationOrder =
           fmap ((\(_, b, _) -> b) . fromVertex) .
-          -- vertex a is before vertex b when there is an edge from a to b
+          -- in `topSort`, vertex a is before vertex b when there is an edge from a to b
           Graph.topSort $
-          -- parents should be run before children, so vertices should run from parent to child, hence transpose
-          Graph.transposeG migrationGraph
+          -- parents should be run before children so we use `childGraph`
+          childGraph
       for_ migrationOrder $ \migrationName -> do
         putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
         let
