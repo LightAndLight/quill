@@ -1,6 +1,9 @@
+{-# language BangPatterns #-}
 {-# language DeriveDataTypeable #-}
 {-# language OverloadedLists, OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
+{-# language TypeApplications #-}
 {-# language ViewPatterns #-}
 module Quill.Query
   ( QueryEnv
@@ -9,6 +12,7 @@ module Quill.Query
   , query
   , decodeRecord
   , loadString
+  , migrate
   )
 where
 
@@ -23,26 +27,34 @@ import Control.Lens.Indexed (itraverse)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as Lazy
+import Data.Foldable (foldlM, for_)
+import qualified Data.Graph as Graph
 import Data.Int (Int64)
 import qualified Data.Map as Map
+import qualified Data.Maybe as Maybe
 import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import Data.Void (absurd)
+import Data.Void (Void, absurd)
 import Text.Show.Deriving (makeShow)
 
+import qualified Data.Graph.Extra as Graph (roots)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
+import qualified Quill.Check.Migration as Check (_meMigrations, emptyMigrationEnv, checkMigrations)
 import Quill.Marshall (Value)
 import qualified Quill.Marshall as Marshall
 import Quill.Normalise (toExpr)
 import qualified Quill.Normalise as Normalise
 import qualified Quill.Parser as Parser
 import qualified Quill.SQL as SQL
+import qualified Quill.SQL.Migration as SQL (compileMigration)
 import qualified Quill.Syntax as Syntax
+import Quill.Syntax.Migration (Migration)
+import qualified Quill.Syntax.Migration as Migration
 
 data QueryException
   = ParseError String
@@ -237,3 +249,47 @@ createTable (QueryEnv backend env) tableName = do
     Map.lookup tableNameLower (Check._deTables env)
   let table = SQL.compileTable tableNameLower tableInfo
   doneResponse =<< Backend.request backend (Request'createTable table)
+
+migrate :: forall typeInfo. Show typeInfo => Backend -> [Migration typeInfo] -> IO ()
+migrate backend migrations = do
+  let
+    (parentGraph, fromVertex, toVertex) =
+      Graph.graphFromEdges $
+      (\migration ->
+          (migration, Migration._mName migration, maybe [] pure $ Migration._mParent migration)
+      ) <$>
+      migrations
+    childGraph = Graph.transposeG parentGraph
+    -- in parentGraph, the edges go from child to parent
+    -- in childGraph, the edges go from parent to child
+  let
+    roots :: [Migration.Name]
+    roots =
+      foldr
+        (\v rest -> case fromVertex v of; (_, k, _) -> k : rest)
+        []
+        (Graph.roots childGraph fromVertex toVertex)
+  migrationEnv <-
+    foldlM
+      (\acc next ->
+        either (error . show) pure $
+        Check.checkMigrations @typeInfo @Void migrations acc next
+      )
+      Check.emptyMigrationEnv
+      roots
+  let
+    migrationOrder :: [Migration.Name]
+    migrationOrder =
+      fmap ((\(_, b, _) -> b) . fromVertex) .
+      -- in `topSort`, vertex a is before vertex b when there is an edge from a to b
+      Graph.topSort $
+      -- parents should be run before children so we use `childGraph`
+      childGraph
+  for_ migrationOrder $ \migrationName -> do
+    putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
+    let
+      !compiled =
+        SQL.compileMigration
+          migrationEnv
+          (Maybe.fromJust $ Map.lookup migrationName (Check._meMigrations migrationEnv))
+    doneResponse =<< Backend.request backend (Request'migrate compiled)
