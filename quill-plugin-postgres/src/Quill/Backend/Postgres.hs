@@ -334,7 +334,7 @@ handleRequest config sock req =
             let
               createMigrations =
                 Postgres.exec conn $
-                "CREATE TABLE quill_migrations(id SERIAL PRIMARY KEY, name TEXT NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS quill_migrations(id SERIAL PRIMARY KEY, name TEXT NOT NULL);"
             in
             withResult conn createMigrations $ \result -> do
               status <- Postgres.resultStatus result
