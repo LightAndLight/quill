@@ -15,7 +15,7 @@ import qualified Quill.Backend as Backend
 import Quill.Check.Migration (MigrationError(..))
 import qualified Quill.Query as Query
 import Quill.Syntax (TableItem(..), Type(..))
-import Quill.Syntax.Migration (Migration(..), Command(..))
+import Quill.Syntax.Migration (Migration(..), Command(..), FieldChange(..))
 import qualified Quill.Syntax.Migration as Migration
 
 exec :: Backend -> ByteString -> IO Response
@@ -58,7 +58,7 @@ tableShouldExist backend tableName columnNames = do
 migrateTests :: Spec
 migrateTests = do
   around
-    (setupDbMigrate (const $ pure ()) (\backend -> shouldBeDone =<< exec backend "DROP TABLE IF EXISTS table1;")) .
+    (setupDbMigrate (const $ pure ()) (\backend -> shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"table1\";")) .
     describe "migrate success" $ do
       it "1" $ \backend -> do
         let
@@ -80,9 +80,9 @@ migrateTests = do
         tableShouldExist backend "table1" ["field1"]
 
   around
-    (setupDbMigrate (const $ pure ()) (const $ pure ())) .
+    (setupDbMigrate (const $ pure ()) (\backend -> shouldBeDone =<< exec backend "DROP TABLE IF EXISTS \"table1\";")) .
     describe "migrate failure" $ do
-      it "1" $ \backend -> do
+      it "missing parent" $ \backend -> do
         let
           migrations =
             [ Migration
@@ -99,4 +99,45 @@ migrateTests = do
         result <- Query.migrate backend migrations
         case result of
           Left errs -> errs `shouldBe` [MigrationNotFound $ Migration.Name "doesn'texist"]
+          Right () -> expectationFailure "Expected an error but got a success"
+      it "trying to rewrite history" $ \backend -> do
+        let
+          migrations1 =
+            [ Migration
+              { _mName = Migration.Name "migration1"
+              , _mParent = Nothing
+              , _mCommands =
+                [ CreateTable
+                    "table1"
+                    [ Field "field1" $ TInt ()
+                    ]
+                ]
+              }
+            ]
+          migrations2 =
+            [ Migration
+              { _mName = Migration.Name "migration1"
+              , _mParent = Nothing
+              , _mCommands =
+                [ CreateTable
+                    "table1"
+                    [ Field "field2" $ TInt ()
+                    ]
+                ]
+              }
+            , Migration
+              { _mName = Migration.Name "migration2"
+              , _mParent = Just $ Migration.Name "migration1"
+              , _mCommands =
+                [ AlterTable
+                    "table1"
+                    [ DropField "field2"
+                    ]
+                ]
+              }
+            ]
+        (`shouldBe` Right ()) =<< Query.migrate backend migrations1
+        result <- Query.migrate backend migrations2
+        case result of
+          Left errs -> error "TODO" errs
           Right () -> expectationFailure "Expected an error but got a success"

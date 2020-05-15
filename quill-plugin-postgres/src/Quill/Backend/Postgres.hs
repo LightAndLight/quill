@@ -237,7 +237,7 @@ handleRequest config sock req =
           Just res -> do
             status <- Postgres.resultStatus res
             case status of
-              Postgres.CommandOk -> respond Response'done
+              Postgres.CommandOk -> respondDone
               _ -> respondDbError conn
       continue
     Request'migrate migration -> handleMigration migration
@@ -249,7 +249,7 @@ handleRequest config sock req =
           Just res -> do
             status <- Postgres.resultStatus res
             case status of
-              Postgres.CommandOk -> respond Response'done
+              Postgres.CommandOk -> respondDone
               Postgres.TuplesOk -> do
                 numRows@(Postgres.Row rs) <- Postgres.ntuples res
                 numCols@(Postgres.Col cs) <- Postgres.nfields res
@@ -288,12 +288,15 @@ handleRequest config sock req =
       respondError . fromString $ "Unexpected union tag: " <> show tag
       continue
   where
+    respond = Capnp.sPutValue sock
+    respondDone = respond Response'done
     respondError = respond . Response'error
     respondDbError conn = do
       m_err <- Postgres.errorMessage conn
       case m_err of
         Nothing -> respondError "An unknown error occurred"
         Just err -> respondError err
+
     withResult ::
       Connection ->
       IO (Maybe a) ->
@@ -306,7 +309,7 @@ handleRequest config sock req =
           respondDbError conn
           continue
         Just res -> k res
-    respond = Capnp.sPutValue sock
+
     continue = pure False
     quit = pure True
 
@@ -320,7 +323,7 @@ handleRequest config sock req =
         withResult conn (exec conn query) $ \result -> do
           status <- Postgres.resultStatus result
           case status of
-            Postgres.CommandOk -> respond Response'done
+            Postgres.CommandOk -> respondDone
             Postgres.FatalError -> respondDbError conn
             _ -> respondError $ "Unsupported response: " <> Char8.pack (show status)
           continue
@@ -339,7 +342,36 @@ handleRequest config sock req =
             withResult conn createMigrations $ \result -> do
               status <- Postgres.resultStatus result
               case status of
-                Postgres.CommandOk -> runMigration conn migrationName commands
+                Postgres.CommandOk -> do
+                  escapedName <-
+                    maybe (error "internal error: escapeStringConn failed") pure =<<
+                    Postgres.escapeStringConn conn migrationName
+                  let
+                    selectName =
+                      Postgres.exec conn $
+                      "SELECT COUNT(*) FROM quill_migrations " <>
+                      "WHERE name = '" <> escapedName <> "';"
+                  withResult conn selectName $ \countResult -> do
+                    countStatus <- Postgres.resultStatus countResult
+                    case countStatus of
+                      Postgres.TuplesOk -> do
+                        m_value <- Postgres.getvalue countResult 0 0
+                        case m_value of
+                          Nothing -> error "internal error: missing quill_migrations count"
+                          Just value ->
+                            case value of
+                              "0" -> runMigration conn migrationName commands
+                              "1" -> respondDone *> continue
+                              _ ->
+                                error $
+                                  "internal error: unexpected quill_migrations count for " <>
+                                  Char8.unpack migrationName <> ": " <> Char8.unpack value
+                      Postgres.FatalError -> do
+                        respondDbError conn
+                        continue
+                      _ -> do
+                        respondError $ "Unsupported response: " <> Char8.pack (show status)
+                        continue
                 Postgres.FatalError -> do
                   respondDbError conn
                   continue
