@@ -1,5 +1,6 @@
 {-# language BangPatterns #-}
 {-# language DeriveDataTypeable #-}
+{-# language FlexibleContexts #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
@@ -21,8 +22,8 @@ import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (Exception, throw)
 import Control.Monad (when)
-import Control.Monad.State (StateT, evalStateT, get, put)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.State (StateT, evalStateT, runState, get, modify, put)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Lens.Indexed (itraverse)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
@@ -30,6 +31,7 @@ import qualified Data.ByteString.Lazy as Lazy
 import Data.Foldable (foldlM, for_)
 import qualified Data.Graph as Graph
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as Map
 import Data.Text (Text)
 import Data.Traversable (for)
@@ -43,6 +45,7 @@ import qualified Data.Graph.Extra as Graph (roots)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
+import Quill.Check.Migration (MigrationError)
 import qualified Quill.Check.Migration as Check (_meMigrations, emptyMigrationEnv, checkMigrations)
 import Quill.Marshall (Value)
 import qualified Quill.Marshall as Marshall
@@ -249,7 +252,12 @@ createTable (QueryEnv backend env) tableName = do
   let table = SQL.compileTable tableNameLower tableInfo
   doneResponse =<< Backend.request backend (Request'createTable table)
 
-migrate :: forall typeInfo. Show typeInfo => Backend -> [Migration typeInfo] -> IO ()
+migrate ::
+  forall typeInfo m.
+  MonadIO m =>
+  Backend ->
+  [Migration typeInfo] ->
+  m (Either (NonEmpty (MigrationError typeInfo Void)) ())
 migrate backend migrations = do
   let
     (parentGraph, fromVertex, toVertex) =
@@ -268,30 +276,41 @@ migrate backend migrations = do
         (\v rest -> case fromVertex v of; (_, k, _) -> k : rest)
         []
         (Graph.roots childGraph fromVertex toVertex)
-  migrationEnv <-
-    foldlM
-      (\acc next ->
-        either (error . show) pure $
-        Check.checkMigrations @typeInfo @Void migrations acc next
-      )
-      Check.emptyMigrationEnv
-      roots
+
   let
-    migrationOrder :: [Migration.Name]
-    migrationOrder =
-      fmap ((\(_, b, _) -> b) . fromVertex) .
-      -- in `topSort`, vertex a is before vertex b when there is an edge from a to b
-      Graph.topSort $
-      -- parents should be run before children so we use `childGraph`
-      childGraph
-  for_ migrationOrder $ \migrationName -> do
-    putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
-    let
-      !compiled =
-        SQL.compileMigration
-          migrationEnv
-          (case Map.lookup migrationName (Check._meMigrations migrationEnv) of
-             Nothing -> error $ "Migration " <> show migrationName <> " missing from environment"
-             Just migration -> migration
-          )
-    doneResponse =<< Backend.request backend (Request'migrate compiled)
+    (migrationEnv, errors) =
+      flip runState [] $
+      foldlM
+        (\acc next ->
+          case Check.checkMigrations @typeInfo @Void migrations acc next of
+            Left err -> acc <$ modify (err :)
+            Right result -> pure result
+        )
+        Check.emptyMigrationEnv
+        roots
+
+  case errors of
+    e : es -> pure $ Left (e :| es)
+    [] -> do
+      let
+        migrationOrder :: [Migration.Name]
+        migrationOrder =
+          fmap ((\(_, b, _) -> b) . fromVertex) .
+          -- in `topSort`, vertex a is before vertex b when there is an edge from a to b
+          Graph.topSort $
+          -- parents should be run before children so we use `childGraph`
+          childGraph
+
+      for_ migrationOrder $ \migrationName -> do
+        liftIO . putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
+        let
+          !compiled =
+            SQL.compileMigration
+              migrationEnv
+              (case Map.lookup migrationName (Check._meMigrations migrationEnv) of
+                Nothing -> error $ "Migration " <> show migrationName <> " missing from environment"
+                Just migration -> migration
+              )
+        liftIO $ doneResponse =<< Backend.request backend (Request'migrate compiled)
+
+      pure $ Right ()

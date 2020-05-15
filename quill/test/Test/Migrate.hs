@@ -12,6 +12,7 @@ import Database (setupDb)
 import Expectations (shouldBeDone, shouldBeResult)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
+import Quill.Check.Migration (MigrationError(..))
 import qualified Quill.Query as Query
 import Quill.Syntax (TableItem(..), Type(..))
 import Quill.Syntax.Migration (Migration(..), Command(..))
@@ -73,9 +74,11 @@ migrateTests = do
                 ]
               }
             ]
-        Query.migrate backend migrations
+        result <- Query.migrate backend migrations
+        result `shouldBe` Right ()
 
         tableShouldExist backend "table1" ["field1"]
+
   around
     (setupDbMigrate (const $ pure ()) (const $ pure ())) .
     describe "migrate failure" $ do
@@ -93,6 +96,7 @@ migrateTests = do
                 ]
               }
             ]
-        Query.migrate backend migrations
-
-        () `shouldBe` ()
+        result <- Query.migrate backend migrations
+        case result of
+          Left errs -> errs `shouldBe` [MigrationNotFound $ Migration.Name "doesn'texist"]
+          Right () -> expectationFailure "Expected an error but got a success"
