@@ -420,4 +420,3 @@ handleRequest config sock req =
               else do
                 respondError $ "Parent of " <> migrationName <> " is registered with a different hash"
                 continue
-
