@@ -3,7 +3,7 @@ import Distribution.Simple
 
 import qualified Data.List as List
 import System.Directory (makeAbsolute, listDirectory)
-import "quill-plugin-api-setup" Setup (capnp, find_capnp)
+import "quill-backend-api-setup" Setup (capnp, find_capnp)
 
 main :: IO ()
 main =

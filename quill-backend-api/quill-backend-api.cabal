@@ -1,7 +1,7 @@
 cabal-version:       2.4
-name:                quill-plugin-api
+name:                quill-backend-api
 version:             0.1.0.0
-synopsis:            API definition for Quill backend plugins
+synopsis:            API definition for Quill backends
 -- description:
 -- bug-reports:
 license:             NONE
@@ -21,7 +21,7 @@ custom-setup
     Cabal >=2.4 && <3.0,
     base  ^>=4.12.0.0,
     directory,
-    quill-plugin-api-setup
+    quill-backend-api-setup
 
 library
   exposed-modules:

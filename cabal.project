@@ -1,5 +1,5 @@
 packages:
   ./quill
-  ./quill-plugin-api
-  ./quill-plugin-api-setup
-  ./quill-plugin-postgres
+  ./quill-backend-api
+  ./quill-backend-api-setup
+  ./quill-backend-postgres

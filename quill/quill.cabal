@@ -30,7 +30,7 @@ library
                      , Quill.Syntax
                      , Quill.Syntax.Migration
   build-depends:       base ^>=4.12.0.0
-                     , quill-plugin-api
+                     , quill-backend-api
                      , ansi-wl-pprint
                      , attoparsec
                      , capnp >= 0.4.0.0 && <0.6
@@ -59,7 +59,7 @@ executable quill
   main-is:             Main.hs
   build-depends:       base ^>=4.12.0.0
                      , quill
-                     , quill-plugin-api
+                     , quill-backend-api
                      , bytestring
                      , capnp == 0.4.0.0
                      , containers
@@ -77,7 +77,7 @@ executable quill-dummy
   main-is:             Dummy.hs
   build-depends:       base ^>=4.12.0.0
                      , capnp == 0.4.0.0
-                     , quill-plugin-api
+                     , quill-backend-api
                      , bytestring
                      , network
                      , optparse-applicative
@@ -99,8 +99,8 @@ test-suite quill-tests
                      , Test.Query
   build-depends:       base ^>=4.12.0.0
                      , quill
-                     , quill-plugin-api
-                     , quill-plugin-postgres
+                     , quill-backend-api
+                     , quill-backend-postgres
                      , bound
                      , bytestring >= 0.10
                      , containers

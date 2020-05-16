@@ -1,8 +1,8 @@
 cabal-version:       2.4
 
-name:                quill-plugin-api-setup
+name:                quill-backend-api-setup
 version:             0.1.0.0
-synopsis:            Setup functions for `quill-plugin-api`
+synopsis:            Setup functions for `quill-backend-api`
 -- description:
 -- bug-reports:
 license:             NONE
@@ -17,7 +17,7 @@ library
   build-depends:       base ^>=4.12.0.0
                      , directory
                      , process
-  build-tool-depends:  capnp:capnpc-haskell == 0.4.0.0
+  build-tool-depends:  capnp:capnpc-haskell >= 0.4.0.0 && < 0.6
   hs-source-dirs:      src
   ghc-options:         -Wall
   default-language:    Haskell2010
