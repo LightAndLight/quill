@@ -9,6 +9,8 @@ module Quill.Check.Migration
   ( MigrationError(..)
   , MigrationEnv(..)
   , emptyMigrationEnv
+  , MigrationInfo(..)
+  , makeInfo
   , checkMigration
   , checkMigrations
   )
@@ -18,6 +20,8 @@ import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (runStateT)
 import Data.Foldable (find, foldl', foldlM)
+import Data.Hashable (hash)
+import Data.Hashable.Lifted (liftHashWithSalt)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
@@ -28,6 +32,7 @@ import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void)
 
+import Data.Hashable.Lifted.Orphans ()
 import Quill.Check
   ( ColumnInfo(..), ConstraintError
   , DeclEnv(..)
@@ -39,12 +44,18 @@ import Quill.Check
 import Quill.Check (Lowercase, toLower)
 import qualified Quill.Check as Check
 import Quill.Syntax (Constraint(..), Type(..))
-import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
+import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..), hashCommandWithSalt)
 import qualified Quill.Syntax.Migration as Migration (Name(..))
+
+data MigrationInfo
+  = MigrationInfo
+  { _miParentHash :: Maybe Int
+  , _miHash :: Int
+  } deriving (Eq, Show)
 
 data MigrationEnv
   = MigrationEnv
-  { _meMigrations :: Map Migration.Name (Migration TypeInfo)
+  { _meMigrations :: Map Migration.Name (Migration MigrationInfo TypeInfo)
   , _mePath :: Seq Migration.Name
   , _meTables :: Map (Lowercase Text) TableInfo
   } deriving (Eq, Show)
@@ -301,28 +312,52 @@ checkCommands env commands = do
       commands
   pure (Vector.fromList $ commands' [], env')
 
+makeInfo ::
+  Maybe MigrationInfo -> -- parent's info
+  Vector (Command TypeInfo) -> -- the migration's commands
+  MigrationInfo
+makeInfo m_parent commands =
+  MigrationInfo
+  { _miParentHash = _miHash <$> m_parent
+  , _miHash =
+      liftHashWithSalt
+        hashCommandWithSalt
+        (hash $ _miHash <$> m_parent)
+        commands
+  }
+
 checkMigration ::
   MonadError (MigrationError typeInfo exprInfo) m =>
   (MigrationEnv -> Migration.Name -> m MigrationEnv) ->
   MigrationEnv ->
-  Migration typeInfo ->
+  Migration migrInfo typeInfo ->
   m MigrationEnv
-checkMigration check env (Migration name m_parent commands) = do
+checkMigration check env (Migration name m_parent commands _) = do
   env' <-
     case m_parent of
       Nothing -> pure env
       Just parent -> check env parent
   (commands', env'') <- checkCommands env' commands
+  let
+    mInfo =
+      makeInfo
+        (case m_parent of
+           Nothing -> Nothing
+           Just parent ->
+             maybe (error "internal error: parent migration not found") (Just . _mInfo) $
+             Map.lookup parent (_meMigrations env'')
+        )
+        commands'
   pure $
     env''
     { _meMigrations =
-      Map.insert name (Migration name m_parent commands') $
+      Map.insert name (Migration name m_parent commands' mInfo) $
       _meMigrations env''
     }
 
 checkMigrations ::
   MonadError (MigrationError typeInfo exprInfo) m =>
-  [Migration typeInfo] ->
+  [Migration migrInfo typeInfo] ->
   MigrationEnv ->
   Migration.Name ->
   m MigrationEnv

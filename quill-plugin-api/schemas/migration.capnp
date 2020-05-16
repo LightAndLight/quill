@@ -24,11 +24,17 @@ struct Command {
   }
 }
 
+struct ParentInfo {
+  name @0 :Data;
+  hash @1 :Data;
+}
+
 struct Migration {
   name @0 :Data;
+  hash @1 :Data;
   parent :union {
-    none @1 :Void;
-    some @2 :Data;
+    none @2 :Void;
+    some @3 :ParentInfo;
   }
-  commands @3 :List(Command);
+  commands @4 :List(Command);
 }

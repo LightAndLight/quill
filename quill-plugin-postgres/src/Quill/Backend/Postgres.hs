@@ -5,7 +5,11 @@ module Quill.Backend.Postgres (Config(..), run) where
 
 import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import Capnp.Gen.Migration.Pure
-  (AlterTable(..), Command(..), Migration(Migration), Migration'parent(..), TableChange(..))
+  ( AlterTable(..), Command(..)
+  , Migration(Migration), Migration'parent(..)
+  , ParentInfo(ParentInfo)
+  , TableChange(..)
+  )
 import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
 import Capnp.Gen.Table.Pure
@@ -218,6 +222,11 @@ compileCommand command =
     Command'alterTable (AlterTable tableName tableChanges) ->
       foldMap (compileChange tableName) tableChanges
 
+escapeStringConn :: Postgres.Connection -> ByteString -> IO ByteString
+escapeStringConn conn val =
+  maybe (error "internal error: escapeStringConn failed") pure =<<
+  Postgres.escapeStringConn conn val
+
 handleRequest ::
   Config ->
   Socket ->
@@ -313,11 +322,16 @@ handleRequest config sock req =
     continue = pure False
     quit = pure True
 
-    runMigration :: Connection -> ByteString -> Vector Command -> IO Bool
-    runMigration conn migrationName commands =
+    runMigration :: Connection -> ByteString -> ByteString -> Vector Command -> IO Bool
+    runMigration conn migrationName migrationHash commands =
       let
         query =
-          [ S "INSERT INTO quill_migrations(name) VALUES ('", V migrationName, S "');\n"] <>
+          [ S "INSERT INTO quill_migrations(name, hash) VALUES ("
+          , S "'", V migrationName, S "'"
+          , S ", "
+          , S "'", V migrationHash, S "'"
+          , S ");\n"
+          ] <>
           foldMap compileCommand commands
       in
         withResult conn (exec conn query) $ \result -> do
@@ -328,8 +342,41 @@ handleRequest config sock req =
             _ -> respondError $ "Unsupported response: " <> Char8.pack (show status)
           continue
 
+    withMigrationHash :: Connection -> ByteString -> (Maybe ByteString -> IO Bool) -> IO Bool
+    withMigrationHash conn migrationName k = do
+      escapedName <- escapeStringConn conn migrationName
+      let
+        selectName =
+          Postgres.exec conn $
+          "SELECT hash FROM quill_migrations " <>
+          "WHERE name = '" <> escapedName <> "';"
+      withResult conn selectName $ \result -> do
+        status <- Postgres.resultStatus result
+        case status of
+          Postgres.TuplesOk -> do
+            hashRows <- Postgres.ntuples result
+            case compare hashRows 1 of
+              LT -> k Nothing
+              EQ -> do
+                m_value <- Postgres.getvalue result 0 0
+                case m_value of
+                  Nothing -> error "internal error: no hash data returned from database"
+                  Just value -> k $ Just value
+              GT -> do
+                respondError $
+                  "Migration " <>
+                  migrationName <>
+                  " has multiple entries in the migration table"
+                continue
+          Postgres.FatalError -> do
+            respondDbError conn
+            continue
+          _ -> do
+            respondError $ "Unsupported response: " <> Char8.pack (show status)
+            continue
+
     handleMigration :: Migration -> IO Bool
-    handleMigration (Migration migrationName m_parent commands) =
+    handleMigration (Migration migrationName migrationHash m_parent commands) =
       case m_parent of
         Migration'parent'unknown' tag -> gotUnknown "Migration.parent" tag
         Migration'parent'none ->
@@ -337,79 +384,40 @@ handleRequest config sock req =
             let
               createMigrations =
                 Postgres.exec conn $
-                "CREATE TABLE IF NOT EXISTS quill_migrations(id SERIAL PRIMARY KEY, name TEXT NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS quill_migrations(" <>
+                "id SERIAL PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL" <>
+                ");"
             in
             withResult conn createMigrations $ \result -> do
               status <- Postgres.resultStatus result
               case status of
-                Postgres.CommandOk -> do
-                  escapedName <-
-                    maybe (error "internal error: escapeStringConn failed") pure =<<
-                    Postgres.escapeStringConn conn migrationName
-                  let
-                    selectName =
-                      Postgres.exec conn $
-                      "SELECT COUNT(*) FROM quill_migrations " <>
-                      "WHERE name = '" <> escapedName <> "';"
-                  withResult conn selectName $ \countResult -> do
-                    countStatus <- Postgres.resultStatus countResult
-                    case countStatus of
-                      Postgres.TuplesOk -> do
-                        m_value <- Postgres.getvalue countResult 0 0
-                        case m_value of
-                          Nothing -> error "internal error: missing quill_migrations count"
-                          Just value ->
-                            case value of
-                              "0" -> runMigration conn migrationName commands
-                              "1" -> respondDone *> continue
-                              _ ->
-                                error $
-                                  "internal error: unexpected quill_migrations count for " <>
-                                  Char8.unpack migrationName <> ": " <> Char8.unpack value
-                      Postgres.FatalError -> do
-                        respondDbError conn
-                        continue
-                      _ -> do
-                        respondError $ "Unsupported response: " <> Char8.pack (show status)
-                        continue
-                Postgres.FatalError -> do
-                  respondDbError conn
-                  continue
-                _ -> do
-                  respondError $ "Unsupported response: " <> Char8.pack (show status)
-                  continue
-        Migration'parent'some parent ->
-          withConnection config $ \conn ->
-          let
-            selectParent =
-              Postgres.exec conn $
-              "SELECT name FROM quill_migrations " <>
-              "ORDER BY id DESC LIMIT 1;"
-          in
-            withResult conn selectParent $ \result -> do
-              status <- Postgres.resultStatus result
-              case status of
-                Postgres.TuplesOk -> do
-                  rows <- Postgres.ntuples result
-                  case compare rows 1 of
-                    LT -> do
-                      respondError $ "Missing parent migration '" <> parent <> "'"
-                      continue
-                    EQ ->
-                      withResult conn (Postgres.getvalue result 0 0) $ \value ->
-                      if value == parent
-                      then runMigration conn migrationName commands
+                Postgres.CommandOk ->
+                  withMigrationHash conn migrationName $ \m_hash ->
+                  case m_hash of
+                    Nothing -> runMigration conn migrationName migrationHash commands
+                    Just hash ->
+                      if hash == migrationHash
+                      then respondDone *> continue
                       else do
-                        respondError $ "Most recent migration is '" <> value <> "', not '" <> parent <> "'"
+                        respondError $ "Migration " <> migrationName <> " is registered with a different hash"
                         continue
-                    GT -> error "impossible: the query said 'LIMIT 1' but we got more than one row"
                 Postgres.FatalError -> do
                   respondDbError conn
                   continue
                 _ -> do
                   respondError $ "Unsupported response: " <> Char8.pack (show status)
                   continue
-      -- check that parent is in the migrations table
-      --   if it isn't, return an error
-      --   if it is, exec: adding this migration to the migrations table + commands
+        Migration'parent'some (ParentInfo parentName parentHash) ->
+          withConnection config $ \conn ->
+          withMigrationHash conn parentName $ \m_parentHash ->
+          case m_parentHash of
+            Nothing -> do
+              respondError $ "Missing parent migration '" <> parentName <> "'"
+              continue
+            Just actualParentHash ->
+              if parentHash == actualParentHash
+              then runMigration conn migrationName migrationHash commands
+              else do
+                respondError $ "Parent of " <> migrationName <> " is registered with a different hash"
+                continue
 

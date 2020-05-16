@@ -7,7 +7,7 @@ module Test.Query (queryTests) where
 import Capnp.Gen.Migration.Pure
   ( AlterTable(AlterTable), Command(..)
   , Migration(Migration), Migration'parent(..)
-  , TableChange(..)
+  , ParentInfo(ParentInfo), TableChange(..)
   )
 import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(Result))
@@ -35,6 +35,8 @@ import Expectations (shouldBeDone, shouldBeResult)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
+import Quill.Check.Migration (MigrationInfo(..))
+import qualified Quill.Check.Migration as Check (makeInfo)
 import Quill.Normalise (Value(..))
 import qualified Quill.Normalise as Normalise
 import Quill.Parser (Parser)
@@ -43,6 +45,7 @@ import Quill.Syntax (Type(..))
 import qualified Quill.Query as Query
 import Quill.SQL (CompileError)
 import qualified Quill.SQL as SQL
+import qualified Quill.SQL.Migration as SQL (compileHash)
 
 exec :: Backend -> ByteString -> IO Response
 exec backend = Backend.request backend . Request'exec
@@ -472,6 +475,7 @@ queryTests = do
         m =
           Migration
             "initial"
+            "initial_hash"
             Migration'parent'none
             []
       shouldBeDone =<< Backend.request backend (Request'migrate m)
@@ -487,6 +491,7 @@ queryTests = do
         m =
           Migration
             "initial"
+            (SQL.compileHash . _miHash $ Check.makeInfo Nothing [])
             Migration'parent'none
             []
       shouldBeDone =<< Backend.request backend (Request'migrate m)
@@ -500,15 +505,16 @@ queryTests = do
         m =
           Migration
             "initial"
+            "dummy_hash"
             Migration'parent'none
             [ Command'createTable $
-              Table
-                "my_table"
-                [ Column "id" "INTEGER" True True
-                , Column "a" "BOOLEAN" True False
-                , Column "b" "TEXT" False False
-                ]
-                []
+                Table
+                  "my_table"
+                  [ Column "id" "INTEGER" True True
+                  , Column "a" "BOOLEAN" True False
+                  , Column "b" "TEXT" False False
+                  ]
+                  []
             ]
       shouldBeDone =<< Backend.request backend (Request'migrate m)
       sequenceShouldExist backend "my_table_id_seq"
@@ -531,6 +537,7 @@ queryTests = do
         m1 =
           Migration
             "initial"
+            "initial_hash"
             Migration'parent'none
             [ Command'createTable $
               Table
@@ -544,7 +551,8 @@ queryTests = do
         m2 =
           Migration
             "first"
-            (Migration'parent'some "initial")
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
             [ Command'alterTable $
               AlterTable
                 "my_table"
@@ -575,6 +583,7 @@ queryTests = do
         m1 =
           Migration
             "initial"
+            "initial_hash"
             Migration'parent'none
             [ Command'createTable $
               Table
@@ -588,7 +597,8 @@ queryTests = do
         m2 =
           Migration
             "first"
-            (Migration'parent'some "not_initial")
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "not_initial" "initial_hash")
             [ Command'alterTable $
               AlterTable
                 "my_table"
@@ -599,7 +609,7 @@ queryTests = do
       sequenceShouldExist backend "my_table_id_seq"
       res <- Backend.request backend (Request'migrate m2)
       case res of
-        Response'error err -> err `shouldBe` "Most recent migration is 'initial', not 'not_initial'"
+        Response'error err -> err `shouldBe` "Missing parent migration 'not_initial'"
         _ -> expectationFailure $ "Expected 'error', got: " <> show res
   around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Drop field" $ do
     it "1" $ \backend -> do
@@ -607,6 +617,7 @@ queryTests = do
         m1 =
           Migration
             "initial"
+            "initial_hash"
             Migration'parent'none
             [ Command'createTable $
               Table
@@ -620,7 +631,8 @@ queryTests = do
         m2 =
           Migration
             "first"
-            (Migration'parent'some "initial")
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
             [ Command'alterTable $
               AlterTable
                 "my_table"
@@ -648,6 +660,7 @@ queryTests = do
         m1 =
           Migration
             "initial"
+            "initial_hash"
             Migration'parent'none
             [ Command'createTable $
               Table
@@ -661,7 +674,8 @@ queryTests = do
         m2 =
           Migration
             "first"
-            (Migration'parent'some "initial")
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
             [ Command'alterTable $
               AlterTable
                 "my_table"

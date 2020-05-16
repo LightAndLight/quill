@@ -1,7 +1,12 @@
 {-# language ViewPatterns #-}
-module Quill.SQL.Migration (compileMigration) where
+module Quill.SQL.Migration
+  (compileName, compileHash, compileMigration)
+where
 
+import qualified Data.Binary as Binary
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Lazy as Lazy
 import qualified Data.Map as Map
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
@@ -12,12 +17,13 @@ import qualified Capnp.Gen.Migration.Pure as SQL
   ( AlterTable(AlterTable)
   , Command(..)
   , Migration(..), Migration'parent(..)
+  , ParentInfo(ParentInfo)
   , TableChange(..)
   )
 import qualified Capnp.Gen.Table.Pure as SQL
   (Column(Column), Constraint(..), Other(Other))
 import Quill.Check (TypeInfo, toLower, unLowercase)
-import Quill.Check.Migration (MigrationEnv(..))
+import Quill.Check.Migration (MigrationEnv(..), MigrationInfo(..))
 import Quill.SQL (compileTable, compileType)
 import Quill.Syntax (Constraint(..))
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
@@ -72,14 +78,24 @@ compileCommand env cmd =
         (encodeUtf8 $ unLowercase tableName)
         (compileChange <$> changes)
 
-compileMigration :: MigrationEnv -> Migration TypeInfo -> SQL.Migration
-compileMigration env (Migration name m_parent commands) =
+compileHash :: Int -> ByteString
+compileHash = Base64.encode . Lazy.toStrict . Binary.encode
+
+compileMigration :: MigrationEnv -> Migration MigrationInfo TypeInfo -> SQL.Migration
+compileMigration env (Migration name m_parent commands info) =
   SQL.Migration
   { SQL.name = compileName name
+  , SQL.hash = compileHash $ _miHash info
   , SQL.parent =
-      maybe
-        SQL.Migration'parent'none
-        (SQL.Migration'parent'some . compileName)
-        m_parent
+      case m_parent of
+        Nothing -> SQL.Migration'parent'none
+        Just parent ->
+          case _miParentHash info of
+            Nothing -> error $ "internal error: missing parent hash for " <> show parent
+            Just parentHash ->
+              SQL.Migration'parent'some $
+              SQL.ParentInfo
+                (compileName parent)
+                (compileHash parentHash)
   , SQL.commands = compileCommand env <$> commands
   }

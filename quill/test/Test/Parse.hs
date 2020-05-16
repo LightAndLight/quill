@@ -138,6 +138,7 @@ parseTests = do
               , Field "d" $ TBool ()
               ]
           ]
+          ()
       }
     it "2" $
       parseTest $
@@ -174,6 +175,7 @@ parseTests = do
               , Field "d" $ TBool ()
               ]
           ]
+          ()
       }
     it "3" $
       parseTest $
@@ -202,4 +204,5 @@ parseTests = do
               , DropField "d"
               ]
           ]
+          ()
       }

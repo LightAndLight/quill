@@ -10,20 +10,20 @@ import qualified Quill.Parser as Parser
 import Quill.Syntax.Migration (Command(..), FieldChange(..), Migration(..))
 import qualified Quill.Syntax.Migration as Migration (Name(..))
 
-migration :: (Monad m, TokenParsing m) => m (Migration ())
+migration :: (Monad m, TokenParsing m) => m (Migration () ())
 migration =
   initial <|>
   regular
   where
     initial =
       (\name commands ->
-         Migration name Nothing $ Vector.fromList commands
+         Migration name Nothing (Vector.fromList commands) ()
       ) <$ symbol "initial" <* symbol "migration" <*>
       migrationName <*>
       braces (symbol "commands" *> symbolic ':' *> brackets (command `sepBy` comma))
     regular =
       (\name (parent, commands) ->
-         Migration name (Just parent) $ Vector.fromList commands
+         Migration name (Just parent) (Vector.fromList commands) ()
       ) <$ symbol "migration" <*>
       migrationName <*>
       braces

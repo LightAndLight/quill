@@ -16,6 +16,7 @@ extra-source-files:  CHANGELOG.md
 
 library
   exposed-modules:     Data.Graph.Extra
+                     , Data.Hashable.Lifted.Orphans
                      , Quill.Backend
                      , Quill.Check
                      , Quill.Check.Migration
@@ -33,11 +34,14 @@ library
                      , ansi-wl-pprint
                      , attoparsec
                      , capnp >= 0.4.0.0 && <0.6
+                     , base64-bytestring
                      , bifunctors
+                     , binary
                      , bound
                      , bytestring
                      , containers
                      , deriving-compat
+                     , hashable
                      , lens
                      , mtl
                      , network == 2.8.0.1
@@ -100,6 +104,7 @@ test-suite quill-tests
                      , bound
                      , bytestring >= 0.10
                      , containers
+                     , mtl
                      , network == 2.8.0.1
                      , hspec
                      , text

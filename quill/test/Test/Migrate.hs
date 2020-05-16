@@ -1,9 +1,10 @@
-{-# language OverloadedLists #-}
-{-# language OverloadedStrings #-}
+{-# language OverloadedLists, OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 module Test.Migrate (migrateTests) where
 
 import Capnp.Gen.Request.Pure (Request(..))
-import Capnp.Gen.Response.Pure (Response, Result(Result))
+import Capnp.Gen.Response.Pure (Response(..), Result(Result))
+import Control.Exception (catch)
 import Data.ByteString (ByteString)
 import qualified Data.Vector as Vector
 import Test.Hspec
@@ -13,6 +14,7 @@ import Expectations (shouldBeDone, shouldBeResult)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import Quill.Check.Migration (MigrationError(..))
+import Quill.Query (QueryException(..))
 import qualified Quill.Query as Query
 import Quill.Syntax (TableItem(..), Type(..))
 import Quill.Syntax.Migration (Migration(..), Command(..), FieldChange(..))
@@ -72,6 +74,7 @@ migrateTests = do
                     [ Field "field1" $ TInt ()
                     ]
                 ]
+              , _mInfo = ()
               }
             ]
         result <- Query.migrate backend migrations
@@ -94,6 +97,7 @@ migrateTests = do
                     [ Field "field1" $ TInt ()
                     ]
                 ]
+              , _mInfo = ()
               }
             ]
         result <- Query.migrate backend migrations
@@ -112,6 +116,7 @@ migrateTests = do
                     [ Field "field1" $ TInt ()
                     ]
                 ]
+              , _mInfo = ()
               }
             ]
           migrations2 =
@@ -124,6 +129,7 @@ migrateTests = do
                     [ Field "field2" $ TInt ()
                     ]
                 ]
+              , _mInfo = ()
               }
             , Migration
               { _mName = Migration.Name "migration2"
@@ -134,10 +140,13 @@ migrateTests = do
                     [ DropField "field2"
                     ]
                 ]
+              , _mInfo = ()
               }
             ]
         (`shouldBe` Right ()) =<< Query.migrate backend migrations1
-        result <- Query.migrate backend migrations2
-        case result of
-          Left errs -> error "TODO" errs
-          Right () -> expectationFailure "Expected an error but got a success"
+        catch
+          (Query.migrate backend migrations2 *> expectationFailure "expected an error to be thrown")
+          (\(e :: QueryException) ->
+             e `shouldBe`
+             UnexpectedResponse (Response'error "Migration migration1 is registered with a different hash")
+          )

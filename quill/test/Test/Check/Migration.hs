@@ -1,18 +1,45 @@
+{-# language FlexibleContexts #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 module Test.Check.Migration (checkTests) where
 
 import Control.Applicative (some)
+import Control.Monad.State (evalState, gets, modify)
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
 import Quill.Check (TypeInfo(..))
-import Quill.Check.Migration (MigrationEnv(..), MigrationError)
+import Quill.Check.Migration (MigrationEnv(..), MigrationError, MigrationInfo(..))
 import qualified Quill.Check as Check (Origin(..), TableError(..), ConstraintError(..))
-import qualified Quill.Check.Migration as Check (MigrationError(..), checkMigrations, emptyMigrationEnv)
+import qualified Quill.Check.Migration as Check (MigrationError(..), checkMigrations, emptyMigrationEnv, makeInfo)
 import Quill.Syntax (Constraint(..), TableItem(..), Type(..))
 import Quill.Syntax.Migration (Migration(..))
 import qualified Quill.Syntax.Migration as Migration
 import qualified Quill.Parser as Parser (eof, parseString)
 import qualified Quill.Parser.Migration as Parser (migration)
+
+migrations ::
+  Map Migration.Name (Migration migrationInfo TypeInfo) ->
+  Map Migration.Name (Migration MigrationInfo TypeInfo)
+migrations ms = evalState (traverse run ms) mempty
+  where
+    run m =  do
+      m_info <- gets $ Map.lookup (_mName m)
+      case m_info of
+        Nothing -> do
+          parentInfo <-
+            traverse
+              (\pname ->
+                 case Map.lookup pname ms of
+                   Nothing -> error $ "couldn't find migration " <> show pname
+                   Just p -> _mInfo <$> run p
+              )
+              (_mParent m)
+          let info = Check.makeInfo parentInfo $ _mCommands m
+          modify $ Map.insert (_mName m) info
+          pure $ m { _mInfo = info }
+        Just info ->
+          pure $ m { _mInfo = info }
 
 data Check
   = Check
@@ -385,7 +412,7 @@ successTests = do
         output `shouldBe`
         Right
           (Check.emptyMigrationEnv
-           { _meMigrations = [(m_a, Migration m_a Nothing [])]
+           { _meMigrations = migrations [(m_a, Migration m_a Nothing [] ())]
            }
           )
     }
@@ -414,18 +441,21 @@ successTests = do
           in
             _meMigrations <$> output `shouldBe`
             Right
-            [ ( m_a
-              , Migration
-                  m_a
-                  Nothing
-                  [ Migration.CreateTable "Table1"
-                    [ Field "id" idTy
-                    , Constraint PrimaryKey ["id"]
-                    , Field "b" bTy
-                    ]
-                  ]
-              )
-            ]
+            (migrations
+             [ ( m_a
+               , Migration
+                   m_a
+                   Nothing
+                   [ Migration.CreateTable "Table1"
+                     [ Field "id" idTy
+                     , Constraint PrimaryKey ["id"]
+                     , Field "b" bTy
+                     ]
+                   ]
+                   ()
+               )
+             ]
+            )
         }
   it "initial migration - create and alter" $
     let
@@ -451,17 +481,20 @@ successTests = do
         \output ->
           _meMigrations <$> output `shouldBe`
           Right
-          [ ( m_a
-            , Migration m_a Nothing
-              [ Migration.CreateTable "Table1"
-                [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
-                , Constraint PrimaryKey ["id"]
-                , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
-                ]
-              , Migration.AlterTable "Table1" [Migration.DropField "b"]
-              ]
-            )
-          ]
+          (migrations
+           [ ( m_a
+             , Migration m_a Nothing
+               [ Migration.CreateTable "Table1"
+                 [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                 , Constraint PrimaryKey ["id"]
+                 , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                 ]
+               , Migration.AlterTable "Table1" [Migration.DropField "b"]
+               ]
+               ()
+             )
+           ]
+          )
       }
   it "migration - create and alter" $
     let
@@ -494,17 +527,29 @@ successTests = do
         \output ->
           _meMigrations <$> output `shouldBe`
           Right
-          [ ( m_a
-            , Migration m_a Nothing
-              [ Migration.CreateTable "Table1"
-                [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
-                , Constraint PrimaryKey ["id"]
-                , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
-                ]
-              ]
-            )
-          , ( m_b
-            , Migration m_b (Just m_a) [Migration.AlterTable "Table1" [Migration.DropField "b"]]
-            )
-          ]
+          (migrations
+           [ ( m_a
+             , Migration
+               { _mName = m_a
+               , _mParent = Nothing
+               , _mCommands =
+                 [ Migration.CreateTable "Table1"
+                   [ Field "id" $ TInt (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                   , Constraint PrimaryKey ["id"]
+                   , Field "b" $ TBool (TypeInfo { _typeInfoOrigin = Just Check.Column })
+                   ]
+                 ]
+               , _mInfo = ()
+               }
+             )
+           , ( m_b
+             , Migration
+               { _mName = m_b
+               , _mParent = Just m_a
+               , _mCommands = [Migration.AlterTable "Table1" [Migration.DropField "b"]]
+               , _mInfo = ()
+               }
+             )
+           ]
+          )
       }

@@ -3,11 +3,11 @@
 {-# language FlexibleContexts #-}
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language ScopedTypeVariables #-}
-{-# language TemplateHaskell #-}
 {-# language TypeApplications #-}
 {-# language ViewPatterns #-}
 module Quill.Query
-  ( QueryEnv
+  ( QueryException(..)
+  , QueryEnv
   , createTable
   , load
   , query
@@ -39,7 +39,6 @@ import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
-import Text.Show.Deriving (makeShow)
 
 import qualified Data.Graph.Extra as Graph (roots)
 import Quill.Backend (Backend)
@@ -70,15 +69,7 @@ data QueryException
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
   | UnexpectedResponse Response
-  deriving Typeable
-$(pure [])
-showQueryException :: QueryException -> String
-showQueryException = $(makeShow ''QueryException)
-instance Show QueryException where
-  show e =
-    case e of
-      ParseError s -> "ParseError:\n\n" <> s
-      _ -> showQueryException e
+  deriving (Eq, Show, Typeable)
 instance Exception QueryException
 
 data QueryEnv = QueryEnv { _qeBackend :: Backend, _qeDeclEnv :: Check.DeclEnv }
@@ -253,10 +244,10 @@ createTable (QueryEnv backend env) tableName = do
   doneResponse =<< Backend.request backend (Request'createTable table)
 
 migrate ::
-  forall typeInfo m.
+  forall migrInfo typeInfo m.
   MonadIO m =>
   Backend ->
-  [Migration typeInfo] ->
+  [Migration migrInfo typeInfo] ->
   m (Either (NonEmpty (MigrationError typeInfo Void)) ())
 migrate backend migrations = do
   let

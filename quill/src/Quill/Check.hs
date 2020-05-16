@@ -143,7 +143,7 @@ data Origin
 data Info
   = Info
   { _infoType :: Type TypeInfo
-  } deriving Show
+  } deriving (Eq, Show)
 
 newtype Lowercase a = Lowercase { unLowercase :: a }
   deriving (Eq, Show, Ord)
@@ -740,7 +740,7 @@ data DeclError typeInfo exprInfo
   | VariableAlreadyDefined Text
   | DuplicateArgument Text
   | TypeError (TypeError exprInfo)
-  deriving Show
+  deriving (Eq, Show)
 
 isEnumerable :: Type () -> Bool
 isEnumerable ty = ty `Set.member` tys

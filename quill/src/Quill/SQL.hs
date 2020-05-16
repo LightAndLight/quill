@@ -46,7 +46,7 @@ import qualified Quill.Syntax as Syntax
 
 data CompileError
   = ExpectedQuery (Syntax.Expr Info String)
-  deriving (Show)
+  deriving (Eq, Show)
 
 parens :: Builder.Builder -> Builder.Builder
 parens a = "(" <> a <> ")"
