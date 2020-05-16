@@ -78,7 +78,7 @@ migrateTests = do
               }
             ]
         result <- Query.migrate backend migrations
-        result `shouldBe` Right ()
+        result `shouldBe` ()
 
         tableShouldExist backend "table1" ["field1"]
 
@@ -100,10 +100,12 @@ migrateTests = do
               , _mInfo = ()
               }
             ]
-        result <- Query.migrate backend migrations
-        case result of
-          Left errs -> errs `shouldBe` [MigrationNotFound $ Migration.Name "doesn'texist"]
-          Right () -> expectationFailure "Expected an error but got a success"
+        catch
+          (Query.migrate backend migrations *> expectationFailure "expected an error to be thrown")
+          (\(e :: QueryException) ->
+             e `shouldBe`
+             MigrationErrors [MigrationNotFound $ Migration.Name "doesn'texist"]
+          )
       it "trying to rewrite history" $ \backend -> do
         let
           migrations1 =
@@ -143,7 +145,7 @@ migrateTests = do
               , _mInfo = ()
               }
             ]
-        (`shouldBe` Right ()) =<< Query.migrate backend migrations1
+        (`shouldBe` ()) =<< Query.migrate backend migrations1
         catch
           (Query.migrate backend migrations2 *> expectationFailure "expected an error to be thrown")
           (\(e :: QueryException) ->

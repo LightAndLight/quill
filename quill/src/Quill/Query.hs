@@ -23,7 +23,7 @@ import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (Exception, throw)
 import Control.Monad (when)
 import Control.Monad.State (StateT, evalStateT, runState, get, modify, put)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.IO.Class (liftIO)
 import Control.Lens.Indexed (itraverse)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
@@ -68,6 +68,7 @@ data QueryException
   | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
+  | MigrationErrors (NonEmpty (MigrationError () Void))
   | UnexpectedResponse Response
   deriving (Eq, Show, Typeable)
 instance Exception QueryException
@@ -244,11 +245,9 @@ createTable (QueryEnv backend env) tableName = do
   doneResponse =<< Backend.request backend (Request'createTable table)
 
 migrate ::
-  forall migrInfo typeInfo m.
-  MonadIO m =>
   Backend ->
-  [Migration migrInfo typeInfo] ->
-  m (Either (NonEmpty (MigrationError typeInfo Void)) ())
+  [Migration migrInfo ()] ->
+  IO ()
 migrate backend migrations = do
   let
     (parentGraph, fromVertex, toVertex) =
@@ -273,7 +272,7 @@ migrate backend migrations = do
       flip runState [] $
       foldlM
         (\acc next ->
-          case Check.checkMigrations @typeInfo @Void migrations acc next of
+          case Check.checkMigrations @() @Void migrations acc next of
             Left err -> acc <$ modify (err :)
             Right result -> pure result
         )
@@ -281,7 +280,7 @@ migrate backend migrations = do
         roots
 
   case errors of
-    e : es -> pure $ Left (e :| es)
+    e : es -> throw $ MigrationErrors (e :| es)
     [] -> do
       let
         migrationOrder :: [Migration.Name]
@@ -293,7 +292,7 @@ migrate backend migrations = do
           childGraph
 
       for_ migrationOrder $ \migrationName -> do
-        liftIO . putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
+        putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
         let
           !compiled =
             SQL.compileMigration
@@ -302,6 +301,6 @@ migrate backend migrations = do
                 Nothing -> error $ "Migration " <> show migrationName <> " missing from environment"
                 Just migration -> migration
               )
-        liftIO $ doneResponse =<< Backend.request backend (Request'migrate compiled)
+        doneResponse =<< Backend.request backend (Request'migrate compiled)
 
-      pure $ Right ()
+      pure ()
