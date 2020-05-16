@@ -35,8 +35,6 @@ import Expectations (shouldBeDone, shouldBeResult)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
-import Quill.Check.Migration (MigrationInfo(..))
-import qualified Quill.Check.Migration as Check (makeInfo)
 import Quill.Normalise (Value(..))
 import qualified Quill.Normalise as Normalise
 import Quill.Parser (Parser)
@@ -45,7 +43,6 @@ import Quill.Syntax (Type(..))
 import qualified Quill.Query as Query
 import Quill.SQL (CompileError)
 import qualified Quill.SQL as SQL
-import qualified Quill.SQL.Migration as SQL (compileHash)
 
 exec :: Backend -> ByteString -> IO Response
 exec backend = Backend.request backend . Request'exec
@@ -485,20 +482,6 @@ queryTests = do
       rows `shouldBe` 1
       cols `shouldBe` 1
       data_ `shouldBe` [["quill_migrations"]]
-  around (setupDbDeleting ["quill_migrations"]) . describe "Initial migration fails the second time" $ do
-    it "1" $ \backend -> do
-      let
-        m =
-          Migration
-            "initial"
-            (SQL.compileHash . _miHash $ Check.makeInfo Nothing [])
-            Migration'parent'none
-            []
-      shouldBeDone =<< Backend.request backend (Request'migrate m)
-      res <- Backend.request backend (Request'migrate m)
-      case res of
-        Response'error val -> val `shouldBe` "ERROR:  relation \"quill_migrations\" already exists\n"
-        _ -> expectationFailure $ "Expected 'error', got: " <> show res
   around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Creating a table in initial migration" $ do
     it "1" $ \backend -> do
       let
