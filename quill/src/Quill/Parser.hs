@@ -2,15 +2,27 @@
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language RankNTypes #-}
 module Quill.Parser
-  ( Parser, eof
+  ( -- * Re-exports
+    Parser, eof
+    -- * Parsing
+  , parseString
+  , parseFile
+    -- * Variables and keywords
+  , constructor
+  , variable
+  , reserved
+    -- * Expressions
   , expr
   , query
+    -- * Types
   , type_
+    -- * Tables
+  , constraint
+  , tableItem
+    -- * Modules
   , decl
   , decls
   , language
-  , parseString
-  , parseFile
   )
 where
 
@@ -37,7 +49,7 @@ varStyle =
   , _styleLetter = alphaNum <|> char '_'
   , _styleReserved =
     [ "for", "in", "where", "yield", "select", "from", "insert", "into", "returning"
-    , "table", "type", "query", "fn", "return"
+    , "table", "type", "query", "fn", "return", "constraint"
     ]
   , _styleHighlight = Highlight.Identifier
   , _styleReservedHighlight = Highlight.ReservedIdentifier
@@ -241,6 +253,23 @@ type_ =
       fmap (TRecord () . Vector.fromList) $
       ((,) <$> variable <* symbolic ':' <*> type_) `sepBy` comma
 
+constraint :: (Monad m, TokenParsing m) => m Constraint
+constraint =
+  (\case
+      "PK" -> PrimaryKey
+      "AUTO_INCREMENT" -> AutoIncrement
+      ctor -> Other ctor
+  ) <$>
+  constructor
+
+tableItem :: (Monad m, TokenParsing m) => m (TableItem ())
+tableItem =
+  (field <?> "field declaration") <|>
+  (constr <?> "field constraint")
+  where
+    field = Field <$> variable <* symbolic ':' <*> type_
+    constr = Constraint <$> constraint <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
+
 decl :: (Monad m, TokenParsing m) => m (Decl () ())
 decl =
   table <|>
@@ -248,16 +277,6 @@ decl =
   queryDecl <|>
   fnDecl
   where
-    constraint =
-      (\case
-          "PK" -> PrimaryKey
-          "AUTO_INCREMENT" -> AutoIncrement
-          ctor -> Other ctor
-      ) <$>
-      constructor
-    tableItem =
-      Field <$> variable <* symbolic ':' <*> type_ <|>
-      Constraint <$> constraint <*> parens (fmap Vector.fromList $ variable `sepBy1` comma)
     table =
       Table <$ reserved "table" <*>
       constructor <*>

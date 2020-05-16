@@ -4,32 +4,36 @@
 {-# language TypeApplications #-}
 module Test.Query (queryTests) where
 
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Migration.Pure
+  ( AlterTable(AlterTable), Command(..)
+  , Migration(Migration), Migration'parent(..)
+  , ParentInfo(ParentInfo), TableChange(..)
+  )
+import Capnp.Gen.Request.Pure (Request(..))
+import Capnp.Gen.Response.Pure (Response(..), Result(Result))
+import Capnp.Gen.Table.Pure
   ( Column(..)
   , Constraint(..)
-  , Request(..)
   , Table(Table)
   )
-import Capnp.Gen.Response.Pure (Response(..), Result(..))
-import Control.Exception (bracket)
 import Data.ByteString (ByteString)
+import Data.Foldable (traverse_)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy as Lazy
 import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
-import qualified Data.Text as Text
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
 import GHC.Exts (fromList)
 import GHC.Stack (HasCallStack)
-import qualified Network.Socket as Socket
 import System.Exit (exitFailure)
 import Test.Hspec
 
+import Database (setupDb)
+import Expectations (shouldBeDone, shouldBeResult)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
-import qualified Quill.Backend.Postgres as Postgres
 import qualified Quill.Check as Check
 import Quill.Normalise (Value(..))
 import qualified Quill.Normalise as Normalise
@@ -40,63 +44,26 @@ import qualified Quill.Query as Query
 import Quill.SQL (CompileError)
 import qualified Quill.SQL as SQL
 
-setupDb ::
-  (Backend -> IO ()) ->
-  (Backend -> IO ()) ->
-  (Backend -> IO ()) ->
-  IO ()
-setupDb setup teardown k =
-  Backend.withBackend
-    (\server_sock config -> do
-       port <-
-         (\case; Socket.SockAddrInet port _ -> pure $ show port; _ -> error "Got non-IPv4 socket address") =<<
-         Socket.getSocketName server_sock
-       addr <-
-         head <$>
-         Socket.getAddrInfo
-           (Just $
-           Socket.defaultHints
-           { Socket.addrFamily = Socket.AF_INET
-           , Socket.addrSocketType = Socket.Stream
-           }
-           )
-           (Just "127.0.0.1")
-           (Just port)
-       bracket
-         (Socket.socket
-           (Socket.addrFamily addr)
-           (Socket.addrSocketType addr)
-           (Socket.addrProtocol addr)
-         )
-         Socket.close
-         (\client_sock -> do
-            Socket.connect client_sock (Socket.addrAddress addr)
-            Postgres.run client_sock $
-              Postgres.Config
-              { Postgres._cfgPort = port
-              , Postgres._cfgDbHost = Text.unpack <$> Backend._cfgDbHost config
-              , Postgres._cfgDbPort = show <$> Backend._cfgDbPort config
-              , Postgres._cfgDbName = Text.unpack <$> Backend._cfgDbName config
-              , Postgres._cfgDbUser = Text.unpack <$> Backend._cfgDbUser config
-              , Postgres._cfgDbPassword = Text.unpack <$> Backend._cfgDbPassword config
-              }
-         )
-    )
-    Backend.emptyConfig
-    (\b -> bracket (pure b) teardown (\backend -> setup backend *> k backend))
-
 exec :: Backend -> ByteString -> IO Response
 exec backend = Backend.request backend . Request'exec
 
 createTable :: Backend -> Table -> IO Response
 createTable backend = Backend.request backend . Request'createTable
 
+sequenceShouldExist :: HasCallStack => Backend -> ByteString -> IO ()
+sequenceShouldExist backend seqName = do
+  Result rows cols data_ <-
+    shouldBeResult =<<
+    exec backend ("SELECT COUNT(*) FROM information_schema.sequences WHERE sequence_name = '" <> seqName <> "'")
+  rows `shouldBe` 1
+  cols `shouldBe` 1
+  data_ `shouldBe` [["1"]]
+
 setupDbDecode :: (Backend -> IO ()) -> IO ()
 setupDbDecode =
   setupDb
     (\backend -> do
-       _ <-
-         (shouldBeDone =<<) . createTable backend $
+       (shouldBeDone =<<) . createTable backend $
          Table
            "Persons"
            [ Column
@@ -120,14 +87,15 @@ setupDbDecode =
            ]
            [ Constraint'primaryKey ["id"] ]
 
-       _ <- exec backend $
+       sequenceShouldExist backend "persons_id_seq"
+
+       (shouldBeDone =<<) . exec backend $
          Char8.unlines
          [ "INSERT INTO Persons ( age, checked )"
          , "VALUES ( 10, true ), ( 11, false ), ( 12, true );"
          ]
 
-       _ <-
-         (shouldBeDone =<<) . createTable backend $
+       (shouldBeDone =<<) . createTable backend $
          Table
            "Nested"
            [ Column
@@ -151,7 +119,7 @@ setupDbDecode =
            ]
            []
 
-       _ <- exec backend $
+       (shouldBeDone =<<) . exec backend $
          Char8.unlines
          [ "INSERT INTO Nested ( a, nest_b, nest_c )"
          , "VALUES ( 11, 100, true ), ( 22, 200, false ), ( 33, 300, true );"
@@ -160,26 +128,31 @@ setupDbDecode =
        pure ()
     )
     (\backend -> do
-       _ <- exec backend "DROP TABLE Nested;"
-       _ <- exec backend "DROP TABLE Persons;"
-       _ <- exec backend "DROP SEQUENCE Persons_id_seq;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Nested;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Persons;"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS Persons_id_seq;"
        pure ()
     )
 
-setupDbBlank :: (Backend -> IO ()) -> IO ()
-setupDbBlank =
+setupDbDeleting :: [ByteString] -> (Backend -> IO ()) -> IO ()
+setupDbDeleting tableNames =
   setupDb
     (\_ -> pure ())
-    (\_ -> pure ())
+    (\backend ->
+      traverse_
+        (\tableName -> shouldBeDone =<< exec backend ("DROP TABLE IF EXISTS " <> tableName <> ";"))
+        tableNames
+    )
 
 setupDbQuery :: (Backend -> IO ()) -> IO ()
 setupDbQuery =
   setupDb
     (\_ -> pure ())
     (\backend -> do
-       _ <- exec backend "DROP TABLE Expenses;"
+       shouldBeDone =<< exec backend "DROP TABLE IF EXISTS Expenses;"
+       shouldBeDone =<< exec backend "DROP SEQUENCE IF EXISTS Expenses_id_seq;"
        do
-         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
+         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'Expenses';"
          case res of
            Response'result (Result _ _ results) -> results `shouldBe` [["0"]]
            _ -> do
@@ -234,18 +207,6 @@ compile
                       -- print code
                       pure code
 
-shouldBeDone :: Response -> IO ()
-shouldBeDone res =
-  case res of
-    Response'done -> pure ()
-    _ -> error $ "Expected result, got: " <> show res
-
-shouldBeResult :: Response -> IO Result
-shouldBeResult res =
-  case res of
-    Response'result res' -> pure res'
-    _ -> error $ "Expected result, got: " <> show res
-
 queryTests :: Spec
 queryTests = do
   around setupDbDecode . describe "decode" $ do
@@ -269,7 +230,7 @@ queryTests = do
       one `shouldBe` Record [("a", Int 11), ("nest", Record [("b", Int 100), ("c", Bool True)])]
       two `shouldBe` Record [("a", Int 22), ("nest", Record [("b", Int 200), ("c", Bool False)])]
       three `shouldBe` Record [("a", Int 33), ("nest", Record [("b", Int 300), ("c", Bool True)])]
-  around setupDbBlank . describe "create table" $ do
+  around (setupDbDeleting ["Expenses"]) . describe "create table" $ do
     it "1" $ \backend -> do
       query <-
         compile $
@@ -294,10 +255,11 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Check.toLower "Expenses")
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
-      _ <- createTable backend query
+      shouldBeDone =<< createTable backend query
+      sequenceShouldExist backend "expenses_id_seq"
       do
         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
@@ -308,7 +270,7 @@ queryTests = do
         rs `shouldBe` 4
         cs `shouldBe` 1
         results `shouldBe` [["id"], ["cost_dollars"], ["cost_cents"], ["is_food"]]
-      _ <- exec backend "DROP TABLE Expenses;"
+      shouldBeDone =<< exec backend "DROP TABLE Expenses;"
       do
         res <- exec backend "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_name = 'expenses';"
         Result _ _ results <- shouldBeResult res
@@ -339,10 +301,11 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Check.toLower "Expenses")
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
-      _ <- createTable backend create
+      shouldBeDone =<< createTable backend create
+      sequenceShouldExist backend "expenses_id_seq"
       insert <-
         compile $
         Compile
@@ -376,8 +339,7 @@ queryTests = do
         }
       _ <- exec backend insert
       do
-        res <- exec backend "SELECT * FROM Expenses;"
-        Result rs cs results <- shouldBeResult res
+        Result rs cs results <- shouldBeResult =<< exec backend "SELECT * FROM Expenses;"
         rs `shouldBe` 1
         cs `shouldBe` 4
         results `shouldBe` [["1", "2", "3", "t"]]
@@ -407,10 +369,11 @@ queryTests = do
           \_ (_, env) ->
             Right @CompileError $
             SQL.compileTable
-              "Expenses"
-              (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+              (Check.toLower "Expenses")
+              (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
         }
-      _ <- createTable backend create
+      shouldBeDone =<< createTable backend create
+      sequenceShouldExist backend "expenses_id_seq"
       select <-
         compile $
         Compile
@@ -454,10 +417,9 @@ queryTests = do
             Lazy.toStrict . Builder.toLazyByteString . SQL.compileExpr <$>
             SQL.expr env absurd e
         }
-      _ <- exec backend "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
+      shouldBeDone =<< exec backend "INSERT INTO Expenses(cost_dollars, cost_cents, is_food) VALUES (22, 33, false);"
       do
-        res <- exec backend select
-        Result rs cs results <- shouldBeResult res
+        Result rs cs results <- shouldBeResult =<< exec backend select
         rs `shouldBe` 1
         cs `shouldBe` 4
         results `shouldBe` [["1", "22", "33", "f"]]
@@ -484,6 +446,7 @@ queryTests = do
         , "}"
         ]
       Query.createTable qe "Expenses"
+      sequenceShouldExist backend "expenses_id_seq"
       insertRes <-
         Query.query
           qe
@@ -502,4 +465,220 @@ queryTests = do
           , ("cost", Record [("dollars", Int 10), ("cents", Int 99)])
           , ("is_food", Bool False)
           ]
+        ]
+  around (setupDbDeleting ["quill_migrations"]) . describe "Initial migration setup works" $ do
+    it "1" $ \backend -> do
+      let
+        m =
+          Migration
+            "initial"
+            "initial_hash"
+            Migration'parent'none
+            []
+      shouldBeDone =<< Backend.request backend (Request'migrate m)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend "SELECT table_name FROM information_schema.tables WHERE table_name = 'quill_migrations';"
+      rows `shouldBe` 1
+      cols `shouldBe` 1
+      data_ `shouldBe` [["quill_migrations"]]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Creating a table in initial migration" $ do
+    it "1" $ \backend -> do
+      let
+        m =
+          Migration
+            "initial"
+            "dummy_hash"
+            Migration'parent'none
+            [ Command'createTable $
+                Table
+                  "my_table"
+                  [ Column "id" "INTEGER" True True
+                  , Column "a" "BOOLEAN" True False
+                  , Column "b" "TEXT" False False
+                  ]
+                  []
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m)
+      sequenceShouldExist backend "my_table_id_seq"
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 3
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "text", "YES"]
+        ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Add autoincrementable field in migration" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            "initial_hash"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addColumn $ Column "c" "INTEGER" True True
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      sequenceShouldExist backend "my_table_c_seq"
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 4
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "text", "YES"]
+        , ["c", "integer", "NO"]
+        ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Prerequisite checking works" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            "initial_hash"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "not_initial" "initial_hash")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addColumn $ Column "c" "INTEGER" True True
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      res <- Backend.request backend (Request'migrate m2)
+      case res of
+        Response'error err -> err `shouldBe` "Missing parent migration 'not_initial'"
+        _ -> expectationFailure $ "Expected 'error', got: " <> show res
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Drop field" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            "initial_hash"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "TEXT" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'dropColumn "b"
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 2
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        ]
+  around (setupDbDeleting ["quill_migrations", "my_table"]) . describe "Add constraint" $ do
+    it "1" $ \backend -> do
+      let
+        m1 =
+          Migration
+            "initial"
+            "initial_hash"
+            Migration'parent'none
+            [ Command'createTable $
+              Table
+                "my_table"
+                [ Column "id" "INTEGER" True True
+                , Column "a" "BOOLEAN" True False
+                , Column "b" "INTEGER" False False
+                ]
+                []
+            ]
+        m2 =
+          Migration
+            "first"
+            "first_hash"
+            (Migration'parent'some $ ParentInfo "initial" "initial_hash")
+            [ Command'alterTable $
+              AlterTable
+                "my_table"
+                [ TableChange'addConstraint $ Constraint'autoIncrement "b"
+                ]
+            ]
+      shouldBeDone =<< Backend.request backend (Request'migrate m1)
+      sequenceShouldExist backend "my_table_id_seq"
+      shouldBeDone =<< Backend.request backend (Request'migrate m2)
+      sequenceShouldExist backend "my_table_b_seq"
+      Result rows cols data_ <-
+        shouldBeResult =<<
+        exec backend
+        ("SELECT column_name, data_type, is_nullable " <>
+         "FROM information_schema.columns WHERE table_name = 'my_table';"
+        )
+      rows `shouldBe` 3
+      cols `shouldBe` 3
+      data_ `shouldBe`
+        [ ["id", "integer", "NO"]
+        , ["a", "boolean", "NO"]
+        , ["b", "integer", "YES"]
         ]

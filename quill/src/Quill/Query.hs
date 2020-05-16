@@ -1,14 +1,19 @@
+{-# language BangPatterns #-}
 {-# language DeriveDataTypeable #-}
+{-# language FlexibleContexts #-}
 {-# language OverloadedLists, OverloadedStrings #-}
-{-# language TemplateHaskell #-}
+{-# language ScopedTypeVariables #-}
+{-# language TypeApplications #-}
 {-# language ViewPatterns #-}
 module Quill.Query
-  ( QueryEnv
+  ( QueryException(..)
+  , QueryEnv
   , createTable
   , load
   , query
   , decodeRecord
   , loadString
+  , migrate
   )
 where
 
@@ -17,32 +22,40 @@ import Capnp.Gen.Request.Pure (Request(..))
 import Capnp.Gen.Response.Pure (Response(..), Result(..))
 import Control.Exception (Exception, throw)
 import Control.Monad (when)
-import Control.Monad.State (StateT, evalStateT, get, put)
+import Control.Monad.State (StateT, evalStateT, runState, get, modify, put)
 import Control.Monad.IO.Class (liftIO)
 import Control.Lens.Indexed (itraverse)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as Lazy
+import Data.Foldable (foldlM, for_)
+import qualified Data.Graph as Graph
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as Map
 import Data.Text (Text)
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import Data.Void (absurd)
-import Text.Show.Deriving (makeShow)
+import Data.Void (Void, absurd)
 
+import qualified Data.Graph.Extra as Graph (roots)
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
 import qualified Quill.Check as Check
+import Quill.Check.Migration (MigrationError)
+import qualified Quill.Check.Migration as Check (_meMigrations, emptyMigrationEnv, checkMigrations)
 import Quill.Marshall (Value)
 import qualified Quill.Marshall as Marshall
 import Quill.Normalise (toExpr)
 import qualified Quill.Normalise as Normalise
 import qualified Quill.Parser as Parser
 import qualified Quill.SQL as SQL
+import qualified Quill.SQL.Migration as SQL (compileMigration)
 import qualified Quill.Syntax as Syntax
+import Quill.Syntax.Migration (Migration)
+import qualified Quill.Syntax.Migration as Migration
 
 data QueryException
   = ParseError String
@@ -55,16 +68,9 @@ data QueryException
   | TooManyRows Int64 (Syntax.Type Check.TypeInfo)
   | ColumnMismatch Int Int64 (Syntax.Type Check.TypeInfo)
   | DecodeError ByteString String
+  | MigrationErrors (NonEmpty (MigrationError () Void))
   | UnexpectedResponse Response
-  deriving Typeable
-$(pure [])
-showQueryException :: QueryException -> String
-showQueryException = $(makeShow ''QueryException)
-instance Show QueryException where
-  show e =
-    case e of
-      ParseError s -> "ParseError:\n\n" <> s
-      _ -> showQueryException e
+  deriving (Eq, Show, Typeable)
 instance Exception QueryException
 
 data QueryEnv = QueryEnv { _qeBackend :: Backend, _qeDeclEnv :: Check.DeclEnv }
@@ -195,7 +201,7 @@ query (QueryEnv backend env) queryName args = do
             case origin of; Check.Row n -> pure n; _ -> error "impossible: record doesn't have Row origin"
           tableInfo <-
             maybe (error "impossible: missing table info") pure $
-            Map.lookup tableName (Check._deTables env)
+            Map.lookup (Check.toLower tableName) (Check._deTables env)
           let expectedNumColumns = Check._tiNumColumns tableInfo
           when (numColumns /= fromIntegral expectedNumColumns) . throw $
             ColumnMismatch expectedNumColumns numColumns rowTy
@@ -231,9 +237,70 @@ query (QueryEnv backend env) queryName args = do
 
 createTable :: QueryEnv -> Text -> IO ()
 createTable (QueryEnv backend env) tableName = do
+  let tableNameLower = Check.toLower tableName
   tableInfo <-
     maybe (throw $ TableNotFound tableName) pure $
-    Map.lookup tableName (Check._deTables env)
-  let
-    table = SQL.compileTable tableName tableInfo
+    Map.lookup tableNameLower (Check._deTables env)
+  let table = SQL.compileTable tableNameLower tableInfo
   doneResponse =<< Backend.request backend (Request'createTable table)
+
+migrate ::
+  Backend ->
+  [Migration migrInfo ()] ->
+  IO ()
+migrate backend migrations = do
+  let
+    (parentGraph, fromVertex, toVertex) =
+      Graph.graphFromEdges $
+      (\migration ->
+          (migration, Migration._mName migration, maybe [] pure $ Migration._mParent migration)
+      ) <$>
+      migrations
+    childGraph = Graph.transposeG parentGraph
+    -- in parentGraph, the edges go from child to parent
+    -- in childGraph, the edges go from parent to child
+  let
+    roots :: [Migration.Name]
+    roots =
+      foldr
+        (\v rest -> case fromVertex v of; (_, k, _) -> k : rest)
+        []
+        (Graph.roots childGraph fromVertex toVertex)
+
+  let
+    (migrationEnv, errors) =
+      flip runState [] $
+      foldlM
+        (\acc next ->
+          case Check.checkMigrations @() @Void migrations acc next of
+            Left err -> acc <$ modify (err :)
+            Right result -> pure result
+        )
+        Check.emptyMigrationEnv
+        roots
+
+  case errors of
+    e : es -> throw $ MigrationErrors (e :| es)
+    [] -> do
+      let
+        migrationOrder :: [Migration.Name]
+        migrationOrder =
+          fmap ((\(_, b, _) -> b) . fromVertex) .
+          -- in `topSort`, vertex a is before vertex b when there is an edge from a to b
+          Graph.topSort $
+          -- parents should be run before children so we use `childGraph`
+          childGraph
+
+      for_ migrationOrder $ \migrationName -> do
+        putStrLn $ "Running " <> show (Migration.unName migrationName) <> "..."
+        let
+          !compiled =
+            SQL.compileMigration
+              migrationEnv
+              (case Map.lookup migrationName (Check._meMigrations migrationEnv) of
+                Nothing -> error $ "Migration " <> show migrationName <> " missing from environment"
+                Just migration -> migration
+              )
+        doneResponse =<< Backend.request backend (Request'migrate compiled)
+
+      pure ()

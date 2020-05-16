@@ -1,31 +1,36 @@
+{-# language BangPatterns #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
+{-# language TypeApplications #-}
 module Main where
 
-import qualified Capnp (defaultLimit, sGetValue, sPutValue)
 import qualified Capnp.Gen.Request.Pure as Request
 import qualified Capnp.Gen.Response.Pure as Response
-import Control.Concurrent (forkIO)
-import Control.Exception (bracket)
 import Control.Lens.TH (makeLenses)
-import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as Char8
-import Data.Functor (void)
 import GHC.Exts (fromString)
-import Network.Socket (Socket)
-import qualified Network.Socket as Socket
 import Options.Applicative
+import qualified System.Directory as Directory
 import System.Environment (lookupEnv)
+import System.Exit (exitSuccess)
+import System.FilePath ((</>))
 import qualified System.IO as IO
-import qualified System.Process as Process
 import Text.Read (readMaybe)
 
 import Quill.Backend (Backend)
 import qualified Quill.Backend as Backend
+import qualified Quill.Parser as Parser (parseFile, eof)
+import qualified Quill.Parser.Migration as Parser (migration)
+import qualified Quill.Query as Query
+
+quillfiles :: FilePath
+quillfiles = "./quillfiles"
 
 data Command
   = DebugPlugin
+  | Migrate
 
 data Config
   = Config
@@ -52,12 +57,20 @@ configParser =
     (command "debug-plugin"
      (info debugPluginParser $
       fullDesc <> progDesc "Use the plugin in 'echo' mode for debugging purposes"
+     ) <>
+     command "migrate"
+     (info migrateParser $
+      fullDesc <> progDesc "Migrate a database"
      )
     )
   where
     debugPluginParser :: Parser Command
     debugPluginParser =
       pure DebugPlugin
+
+    migrateParser :: Parser Command
+    migrateParser =
+      pure Migrate
 
 main :: IO ()
 main = do
@@ -71,9 +84,9 @@ main = do
   m_port <-
     case _cfgDbPort config of
       Nothing -> pure Nothing
-      Just str ->
-        case readMaybe str of
-          Nothing -> error $ "'" <> str <> "' is not a number"
+      Just portStr ->
+        case readMaybe portStr of
+          Nothing -> error $ "'" <> portStr <> "' is not a number"
           Just port -> pure $ Just port
   Backend.withBackendProcess
     (fromString $ "quill-" <> _cfgBackend config)
@@ -105,3 +118,11 @@ server cmd backend =
               loop
       in
         loop
+    Migrate -> do
+      migrationsFile <- Directory.makeAbsolute $ quillfiles </> "migrations.quillm"
+      migrations <-
+        either error pure =<<
+        Parser.parseFile (some Parser.migration <* Parser.eof) migrationsFile
+      Query.migrate backend migrations
+      putStrLn "All migrations successful!"
+      exitSuccess

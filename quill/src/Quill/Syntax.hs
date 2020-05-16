@@ -6,6 +6,7 @@
 {-# language ViewPatterns #-}
 module Quill.Syntax
   ( Type(..)
+  , hashTypeWithSalt
   , getTypeAnn
   , prettyType
   , Language(..)
@@ -18,7 +19,9 @@ module Quill.Syntax
   , Decl(..)
   , prettyDecl
   , Constraint(..)
+  , hashConstraintWithSalt
   , TableItem(..)
+  , hashTableItemWithSalt
   , prettyTableItem
   , Scope2(..)
   , fromScope2
@@ -40,6 +43,8 @@ import Data.Bifunctor.TH (deriveBifunctor)
 import Data.Deriving (deriveEq2, deriveShow2)
 import Data.Foldable (fold)
 import Data.Functor.Classes (Eq1(..), Show1(..), Eq2(..), Show2(..), eq1, showsPrec1, showsUnaryWith)
+import Data.Hashable (hashWithSalt)
+import Data.Hashable.Lifted (liftHashWithSalt, liftHashWithSalt2)
 import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -48,6 +53,8 @@ import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
 import Text.PrettyPrint.ANSI.Leijen (Doc)
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
+
+import Data.Hashable.Lifted.Orphans ()
 
 data Language
   = Postgresql
@@ -63,6 +70,37 @@ data Type t
   | TName t Text
   | TInt t
   deriving (Eq, Ord, Show, Functor)
+-- NOTE: It's important that if this type is extended, new constructors
+-- are added to the END of the list, so that hashes remain backwards compatible
+
+hashTypeWithSalt :: Int -> Type t -> Int
+hashTypeWithSalt s t =
+  case t of
+    TRecord _ fields ->
+      liftHashWithSalt
+        (liftHashWithSalt2 hashWithSalt hashTypeWithSalt)
+        (s `hashWithSalt` (0::Int))
+        fields
+    TUnit _ ->
+      s `hashWithSalt` (1::Int)
+    TBool _ ->
+      s `hashWithSalt` (2::Int)
+    TMany _ a ->
+      hashTypeWithSalt
+        (s `hashWithSalt` (3::Int))
+        a
+    TQuery _ a ->
+      hashTypeWithSalt
+        (s `hashWithSalt` (4::Int))
+        a
+    TOptional _ a ->
+      hashTypeWithSalt
+        (s `hashWithSalt` (5::Int))
+        a
+    TName _ n ->
+      s `hashWithSalt` (6::Int) `hashWithSalt` n
+    TInt _ ->
+      s `hashWithSalt` (7::Int)
 
 getTypeAnn :: Type t -> t
 getTypeAnn t =
@@ -82,10 +120,33 @@ data Constraint
   | Other Text
   deriving (Eq, Ord, Show)
 
-data TableItem t
-  = Field Text (Type t)
+hashConstraintWithSalt :: Int -> Constraint -> Int
+hashConstraintWithSalt s c =
+  case c of
+    AutoIncrement -> s `hashWithSalt` (0::Int)
+    PrimaryKey -> s `hashWithSalt` (1::Int)
+    Other n -> s `hashWithSalt` (2::Int) `hashWithSalt` n
+
+data TableItem typeInfo
+  = Field Text (Type typeInfo)
   | Constraint Constraint (Vector Text)
   deriving (Eq, Show)
+
+hashTableItemWithSalt :: Int -> TableItem typeInfo -> Int
+hashTableItemWithSalt s item =
+  case item of
+    Field fieldName fieldType ->
+      hashTypeWithSalt
+        (s `hashWithSalt` (0::Int) `hashWithSalt` fieldName)
+        fieldType
+    Constraint constr args ->
+      liftHashWithSalt
+        hashWithSalt
+        (hashConstraintWithSalt
+          (s `hashWithSalt` (1::Int))
+          constr
+        )
+        args
 
 newtype Scope2 x f a b = Scope2 { unscope2 :: Scope x (f a) b }
   deriving (Functor, Foldable, Traversable)
@@ -231,19 +292,19 @@ getAnn e =
     Info a _ -> Just a
     _ -> Nothing
 
-data Decl t t'
-  = Table Text (Vector (TableItem t'))
-  | Type Text (Type t')
+data Decl typeInfo exprInfo
+  = Table Text (Vector (TableItem typeInfo))
+  | Type Text (Type typeInfo)
   | Query
       Text
-      (Vector (Text, Type t'))
-      (Type t')
-      (Scope Int (Expr t) Void)
+      (Vector (Text, Type typeInfo))
+      (Type typeInfo)
+      (Scope Int (Expr exprInfo) Void)
   | Function
       Text
-      (Vector (Text, Type t'))
-      (Type t')
-      (Scope Int (Expr t) Void)
+      (Vector (Text, Type typeInfo))
+      (Type typeInfo)
+      (Scope Int (Expr exprInfo) Void)
   deriving (Eq, Show)
 
 prettyExpr :: (a -> Doc) -> Expr t a -> Doc

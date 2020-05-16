@@ -3,7 +3,7 @@
 {-# language TypeApplications #-}
 module Test.Compile (compileTests) where
 
-import Capnp.Gen.Request.Pure
+import Capnp.Gen.Table.Pure
   ( Column(..)
   , Table(Table)
   )
@@ -38,7 +38,7 @@ data CompileTest where
     } ->
     CompileTest
 
-compileTest :: CompileTest -> IO ()
+compileTest :: HasCallStack => CompileTest -> IO ()
 compileTest
   (CompileTest
    { compile_prelude = prelude
@@ -181,11 +181,11 @@ compileTests = do
         \_ (_, env) ->
           Right @SQL.CompileError $
           SQL.compileTable
-            "Expenses"
-            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+            (Check.toLower "Expenses")
+            (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
       Table
-        "Expenses"
+        "expenses"
         [ Column
           { name = "id"
           , type_ = "INTEGER"
@@ -229,11 +229,11 @@ compileTests = do
         \_ (_, env) ->
           Right @SQL.CompileError $
           SQL.compileTable
-            "Expenses"
-            (Maybe.fromJust . Map.lookup "Expenses" $ Check._deTables env)
+            (Check.toLower "Expenses")
+            (Maybe.fromJust . Map.lookup (Check.toLower "Expenses") $ Check._deTables env)
     , compile_output =
         Table
-          "Expenses"
+          "expenses"
           [ Column
             { name = "id"
             , type_ = "INTEGER"
